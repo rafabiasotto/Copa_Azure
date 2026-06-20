@@ -49,15 +49,16 @@ module "module_vm" {
   sql_admin_password = var.sql_admin_password
 }
 
+# Permite acesso RDP às VMs frontend e backend em Central US
 resource "azurerm_network_security_rule" "allow_rdp_fend_cus" {
-  name                   = "Allow_RDP_CUS"
-  priority               = 300
-  direction              = "Inbound"
-  access                 = "Allow"
-  protocol               = "Tcp"
-  source_port_range      = "*"
-  destination_port_range = "3389"
-  source_address_prefix  = "*"
+  name                        = "Allow_RDP_CUS"
+  priority                    = 300
+  direction                   = "Inbound"
+  access                      = "Allow"
+  protocol                    = "Tcp"
+  source_port_range           = "*"
+  destination_port_range      = "3389"
+  source_address_prefix       = "*"
   destination_address_prefixes = [
     module.module_vm.vm_private_ip_fend_cus,
     module.module_vm.vm_private_ip_bend_cus
@@ -66,6 +67,22 @@ resource "azurerm_network_security_rule" "allow_rdp_fend_cus" {
   network_security_group_name = module.module_network.nsg_cus_name
 }
 
+# Permite acesso HTTPS à VM frontend em Central US
+resource "azurerm_network_security_rule" "allow_https_fend_cus" {
+  name                        = "Allow_HTTPS"
+  priority                    = 310
+  direction                   = "Inbound"
+  access                      = "Allow"
+  protocol                    = "Tcp"
+  source_port_range           = "*"
+  destination_port_range      = "443"
+  source_address_prefix       = "*"
+  destination_address_prefix = module.module_vm.vm_private_ip_fend_cus
+  resource_group_name         = azurerm_resource_group.rg_cus.name
+  network_security_group_name = module.module_network.nsg_cus_name
+}
+
+# Permite acesso RDP à VM data em Central India
 resource "azurerm_network_security_rule" "allow_rdp_data_cin" {
   name                        = "Allow_RDP_CIN"
   priority                    = 310
@@ -75,7 +92,7 @@ resource "azurerm_network_security_rule" "allow_rdp_data_cin" {
   source_port_range           = "*"
   destination_port_range      = "3389"
   source_address_prefix       = "*"
-  destination_address_prefix  = module.module_vm.vm_private_ip_data_cin
+  destination_address_prefix = module.module_vm.vm_private_ip_data_cin
   resource_group_name         = azurerm_resource_group.rg_cus.name
   network_security_group_name = module.module_network.nsg_cin_name
 }
