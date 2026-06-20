@@ -113,3 +113,9 @@ variable "sql_admin_password" {
   type        = string
   sensitive   = true
 }
+
+# Nome da zona DNS pública
+variable "dns_zone_name" {
+  description = "Nome da zona DNS pública"
+  type        = string
+}

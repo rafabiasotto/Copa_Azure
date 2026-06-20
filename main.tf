@@ -89,3 +89,12 @@ resource "azurerm_network_security_rule" "allow_rdp_data_cin" {
   resource_group_name         = azurerm_resource_group.rg_cus.name
   network_security_group_name = module.module_network.nsg_cin_name
 }
+
+# Cria a zona DNS pública e o registro tickets no Resource Group existente
+module "module_dns" {
+  source = "./module_dns"
+
+  rg_name_cus        = azurerm_resource_group.rg_cus.name
+  dns_zone_name      = var.dns_zone_name
+  frontend_public_ip = module.module_vm.vm_public_ip_fend_cus
+}
