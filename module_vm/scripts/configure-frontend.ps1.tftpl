@@ -1,0 +1,653 @@
+# Interrompe o script quando qualquer comando gerar erro
+$ErrorActionPreference = "Stop"
+
+# Evita mensagens de progresso excessivas durante downloads
+$ProgressPreference = "SilentlyContinue"
+
+# Habilita TLS 1.2 para downloads dos instaladores
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# Diretórios utilizados durante a configuração da VM frontend
+$logDirectory  = "C:\Terraform\Logs"
+$workDirectory = "C:\Terraform\Frontend"
+$logFile       = Join-Path $logDirectory "configure-frontend.log"
+
+# Cria os diretórios de trabalho e logs
+New-Item -Path $logDirectory -ItemType Directory -Force | Out-Null
+New-Item -Path $workDirectory -ItemType Directory -Force | Out-Null
+
+# Inicia a gravação do log da configuração
+Start-Transcript -Path $logFile -Append
+
+try {
+    # Converte um valor recebido em Base64 pelo template Terraform
+    function ConvertFrom-Base64Value {
+        param(
+            [Parameter(Mandatory)]
+            [string]$Value
+        )
+
+        return [System.Text.Encoding]::UTF8.GetString(
+            [System.Convert]::FromBase64String($Value)
+        )
+    }
+
+    # Exibe uma etapa formatada no log
+    function Write-Step {
+        param(
+            [Parameter(Mandatory)]
+            [string]$Message
+        )
+
+        Write-Host ""
+        Write-Host "============================================================"
+        Write-Host $Message -ForegroundColor Cyan
+        Write-Host "============================================================"
+    }
+
+    # Faz download de um arquivo e valida se ele foi criado corretamente
+    function Invoke-FileDownload {
+        param(
+            [Parameter(Mandatory)]
+            [string]$Uri,
+
+            [Parameter(Mandatory)]
+            [string]$Destination
+        )
+
+        if (Test-Path $Destination) {
+            Remove-Item -Path $Destination -Force
+        }
+
+        Invoke-WebRequest `
+            -Uri $Uri `
+            -OutFile $Destination `
+            -UseBasicParsing `
+            -Headers @{
+                "User-Agent" = "Terraform-CustomScriptExtension"
+            }
+
+        if (-not (Test-Path $Destination)) {
+            throw "O arquivo nao foi baixado: $Destination"
+        }
+
+        if ((Get-Item $Destination).Length -eq 0) {
+            throw "O arquivo baixado esta vazio: $Destination"
+        }
+    }
+
+    # Verifica se uma aplicação já está instalada no Windows
+    function Test-ApplicationInstalled {
+        param(
+            [Parameter(Mandatory)]
+            [string]$DisplayNamePattern
+        )
+
+        $registryPaths = @(
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+        )
+
+        $application = Get-ItemProperty `
+            -Path $registryPaths `
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.DisplayName -like $DisplayNamePattern
+            } |
+            Select-Object -First 1
+
+        return $null -ne $application
+    }
+
+    # Instala silenciosamente um pacote MSI
+    function Install-MsiPackage {
+        param(
+            [Parameter(Mandatory)]
+            [string]$MsiPath,
+
+            [Parameter(Mandatory)]
+            [string]$ApplicationName
+        )
+
+        $safeApplicationName = $ApplicationName -replace '[^a-zA-Z0-9\-]', '-'
+        $msiLog = Join-Path $logDirectory "$safeApplicationName-install.log"
+
+        $arguments = "/i `"$MsiPath`" /qn /norestart /L*v `"$msiLog`""
+
+        $process = Start-Process `
+            -FilePath "msiexec.exe" `
+            -ArgumentList $arguments `
+            -Wait `
+            -PassThru
+
+        if ($process.ExitCode -notin @(0, 3010, 1638)) {
+            throw "Falha ao instalar $ApplicationName. ExitCode: $($process.ExitCode). Log: $msiLog"
+        }
+
+        if ($process.ExitCode -eq 3010) {
+            Write-Warning "$ApplicationName foi instalado e solicitou reinicializacao."
+        }
+
+        if ($process.ExitCode -eq 1638) {
+            Write-Host "Outra versao de $ApplicationName ja esta instalada." -ForegroundColor Yellow
+        }
+    }
+
+    # Testa um endpoint HTTP com múltiplas tentativas
+    function Test-HttpEndpoint {
+        param(
+            [Parameter(Mandatory)]
+            [string]$Uri,
+
+            [Parameter(Mandatory)]
+            [int]$Attempts,
+
+            [Parameter(Mandatory)]
+            [int]$DelaySeconds,
+
+            [switch]$Required
+        )
+
+        for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+            try {
+                $response = Invoke-WebRequest `
+                    -Uri $Uri `
+                    -UseBasicParsing `
+                    -TimeoutSec 15
+
+                Write-Host "Endpoint respondeu com StatusCode $($response.StatusCode): $Uri" -ForegroundColor Green
+                return $true
+            }
+            catch {
+                Write-Warning "Tentativa $attempt de $Attempts falhou para $Uri`: $($_.Exception.Message)"
+
+                if ($attempt -lt $Attempts) {
+                    Start-Sleep -Seconds $DelaySeconds
+                }
+            }
+        }
+
+        if ($Required) {
+            throw "O endpoint obrigatorio nao respondeu: $Uri"
+        }
+
+        return $false
+    }
+
+    # Recupera as URLs dos arquivos recebidas pelo Terraform
+    $frontendZipUrl       = ConvertFrom-Base64Value '${frontend_zip_url_b64}'
+    $urlRewriteMsiUrl     = ConvertFrom-Base64Value '${url_rewrite_msi_url_b64}'
+    $externalCacheMsiUrl  = ConvertFrom-Base64Value '${external_cache_msi_url_b64}'
+    $arrMsiUrl            = ConvertFrom-Base64Value '${arr_msi_url_b64}'
+
+    # Recupera as configurações do site IIS
+    $frontendSiteName     = ConvertFrom-Base64Value '${frontend_site_name_b64}'
+    $frontendAppPoolName  = ConvertFrom-Base64Value '${frontend_app_pool_name_b64}'
+    $frontendAppPath      = ConvertFrom-Base64Value '${frontend_app_path_b64}'
+
+    # Recupera o IP privado dinâmico da VM backend
+    $backendPrivateIp = ConvertFrom-Base64Value '${backend_private_ip_b64}'
+
+    # Recupera o placeholder existente no web.config
+    $backendPlaceholder = ConvertFrom-Base64Value '${backend_placeholder_b64}'
+
+    # Recupera os endpoints usados nos testes
+    $frontendHealthcheckPath = ConvertFrom-Base64Value '${frontend_healthcheck_path_b64}'
+    $proxyHealthcheckPath    = ConvertFrom-Base64Value '${proxy_healthcheck_path_b64}'
+
+    # Recupera as portas do frontend e backend
+    $frontendPort = ${frontend_port}
+    $backendPort  = ${backend_port}
+
+    # Monta a URL privada do backend
+    if ($backendPort -eq 80) {
+        $backendUrl = "http://$backendPrivateIp"
+    }
+    else {
+        $backendUrl = "http://$backendPrivateIp`:$backendPort"
+    }
+
+    Write-Step "Desabilitando Windows Firewall"
+
+    # Desabilita o Windows Firewall nos três perfis
+    Set-NetFirewallProfile `
+        -Profile Domain, Private, Public `
+        -Enabled False
+
+    Write-Step "Desabilitando IE Enhanced Security Configuration"
+
+    # Chaves do IE Enhanced Security Configuration
+    $adminKey = "HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A7-37EF-4b3f-8CFC-4F3A74704073}"
+    $userKey  = "HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A8-37EF-4b3f-8CFC-4F3A74704073}"
+
+    # Desabilita o IE ESC para administradores
+    if (Test-Path $adminKey) {
+        Set-ItemProperty `
+            -Path $adminKey `
+            -Name "IsInstalled" `
+            -Value 0 `
+            -Force
+    }
+
+    # Desabilita o IE ESC para usuários
+    if (Test-Path $userKey) {
+        Set-ItemProperty `
+            -Path $userKey `
+            -Name "IsInstalled" `
+            -Value 0 `
+            -Force
+    }
+
+    # Encerra processos antigos do Internet Explorer
+    Stop-Process `
+        -Name "iexplore" `
+        -Force `
+        -ErrorAction SilentlyContinue
+
+    Write-Step "Instalando IIS e recursos adicionais"
+
+    # Recursos do IIS necessários para o frontend e proxy reverso
+    $iisFeatures = @(
+        "Web-Server",
+        "Web-WebSockets",
+        "Web-Stat-Compression",
+        "Web-Dyn-Compression",
+        "Web-Scripting-Tools"
+    )
+
+    # Instala o IIS e as ferramentas de gerenciamento
+    $iisResult = Install-WindowsFeature `
+        -Name $iisFeatures `
+        -IncludeManagementTools
+
+    if (-not $iisResult.Success) {
+        throw "Falha ao instalar IIS e recursos adicionais na VM frontend."
+    }
+
+    Write-Step "Instalando IIS URL Rewrite"
+
+    # Instala o URL Rewrite somente se ele ainda não estiver instalado
+    if (-not (Test-ApplicationInstalled -DisplayNamePattern "*URL Rewrite*")) {
+        $urlRewriteMsiPath = Join-Path $workDirectory "url-rewrite-x64.msi"
+
+        Invoke-FileDownload `
+            -Uri $urlRewriteMsiUrl `
+            -Destination $urlRewriteMsiPath
+
+        Install-MsiPackage `
+            -MsiPath $urlRewriteMsiPath `
+            -ApplicationName "IIS-URL-Rewrite"
+    }
+    else {
+        Write-Host "IIS URL Rewrite ja esta instalado." -ForegroundColor Yellow
+    }
+
+    Write-Step "Instalando IIS External Cache"
+
+    # Instala a dependência External Cache do ARR
+    if (-not (Test-ApplicationInstalled -DisplayNamePattern "*External Cache*")) {
+        $externalCacheMsiPath = Join-Path $workDirectory "external-cache-x64.msi"
+
+        Invoke-FileDownload `
+            -Uri $externalCacheMsiUrl `
+            -Destination $externalCacheMsiPath
+
+        Install-MsiPackage `
+            -MsiPath $externalCacheMsiPath `
+            -ApplicationName "IIS-External-Cache"
+    }
+    else {
+        Write-Host "IIS External Cache ja esta instalado." -ForegroundColor Yellow
+    }
+
+    Write-Step "Instalando Application Request Routing"
+
+    # Instala o ARR somente se ele ainda não estiver instalado
+    if (-not (Test-ApplicationInstalled -DisplayNamePattern "*Application Request Routing*")) {
+        $arrMsiPath = Join-Path $workDirectory "application-request-routing-x64.msi"
+
+        Invoke-FileDownload `
+            -Uri $arrMsiUrl `
+            -Destination $arrMsiPath
+
+        Install-MsiPackage `
+            -MsiPath $arrMsiPath `
+            -ApplicationName "IIS-Application-Request-Routing"
+    }
+    else {
+        Write-Host "Application Request Routing ja esta instalado." -ForegroundColor Yellow
+    }
+
+    Write-Step "Habilitando proxy reverso no ARR"
+
+    # Carrega os comandos PowerShell de administração do IIS
+    Import-Module WebAdministration -Force
+
+    # Habilita o proxy reverso do ARR
+    Set-WebConfigurationProperty `
+        -PSPath "MACHINE/WEBROOT/APPHOST" `
+        -Filter "system.webServer/proxy" `
+        -Name "enabled" `
+        -Value $true
+
+    # Preserva o cabeçalho Host enviado pelo cliente
+    Set-WebConfigurationProperty `
+        -PSPath "MACHINE/WEBROOT/APPHOST" `
+        -Filter "system.webServer/proxy" `
+        -Name "preserveHostHeader" `
+        -Value $true
+
+    # Evita que o ARR altere o endereço do host nas respostas
+    Set-WebConfigurationProperty `
+        -PSPath "MACHINE/WEBROOT/APPHOST" `
+        -Filter "system.webServer/proxy" `
+        -Name "reverseRewriteHostInResponseHeaders" `
+        -Value $false
+
+    # Consulta o estado atual do proxy
+    $proxyEnabled = Get-WebConfigurationProperty `
+        -PSPath "MACHINE/WEBROOT/APPHOST" `
+        -Filter "system.webServer/proxy" `
+        -Name "enabled"
+
+    if (-not [System.Convert]::ToBoolean($proxyEnabled.Value)) {
+        throw "O proxy do Application Request Routing nao foi habilitado."
+    }
+
+    Write-Step "Removendo configuracao anterior do frontend"
+
+    # Caminhos do site, Application Pool e site padrão
+    $frontendSitePath    = "IIS:\Sites\$frontendSiteName"
+    $frontendAppPoolPath = "IIS:\AppPools\$frontendAppPoolName"
+    $defaultSitePath     = "IIS:\Sites\Default Web Site"
+
+    # Remove o site frontend anterior
+    if (Test-Path $frontendSitePath) {
+        Stop-Website `
+            -Name $frontendSiteName `
+            -ErrorAction SilentlyContinue
+
+        Remove-Website `
+            -Name $frontendSiteName
+    }
+
+    # Remove o Application Pool anterior
+    if (Test-Path $frontendAppPoolPath) {
+        Stop-WebAppPool `
+            -Name $frontendAppPoolName `
+            -ErrorAction SilentlyContinue
+
+        Remove-WebAppPool `
+            -Name $frontendAppPoolName
+    }
+
+    # Remove o Default Web Site para liberar a porta 80
+    if (Test-Path $defaultSitePath) {
+        Stop-Website `
+            -Name "Default Web Site" `
+            -ErrorAction SilentlyContinue
+
+        Remove-Website `
+            -Name "Default Web Site"
+    }
+
+    Write-Step "Baixando e extraindo a aplicacao frontend"
+
+    # Caminhos usados para download e extração
+    $frontendZipPath = Join-Path $workDirectory "fifa2026-web.zip"
+    $extractDirectory = Join-Path $workDirectory "Extracted"
+
+    # Remove a pasta temporária anterior
+    if (Test-Path $extractDirectory) {
+        Remove-Item `
+            -Path $extractDirectory `
+            -Recurse `
+            -Force
+    }
+
+    # Cria a pasta temporária de extração
+    New-Item `
+        -Path $extractDirectory `
+        -ItemType Directory `
+        -Force |
+        Out-Null
+
+    # Baixa o pacote compilado do frontend
+    Invoke-FileDownload `
+        -Uri $frontendZipUrl `
+        -Destination $frontendZipPath
+
+    # Extrai o pacote do frontend
+    Expand-Archive `
+        -Path $frontendZipPath `
+        -DestinationPath $extractDirectory `
+        -Force
+
+    # Verifica se o ZIP possui uma pasta raiz fifa2026-web
+    $packagedApplicationPath = Join-Path $extractDirectory "fifa2026-web"
+
+    if (Test-Path $packagedApplicationPath) {
+        $sourceApplicationPath = $packagedApplicationPath
+    }
+    else {
+        $sourceApplicationPath = $extractDirectory
+    }
+
+    # Remove a publicação anterior
+    if (Test-Path $frontendAppPath) {
+        Remove-Item `
+            -Path $frontendAppPath `
+            -Recurse `
+            -Force
+    }
+
+    # Cria a pasta definitiva da aplicação
+    New-Item `
+        -Path $frontendAppPath `
+        -ItemType Directory `
+        -Force |
+        Out-Null
+
+    # Copia os arquivos extraídos para a pasta do IIS
+    Copy-Item `
+        -Path (Join-Path $sourceApplicationPath "*") `
+        -Destination $frontendAppPath `
+        -Recurse `
+        -Force
+
+    # Arquivos obrigatórios da aplicação frontend
+    $requiredApplicationItems = @(
+        "index.html",
+        "web.config"
+    )
+
+    # Valida os arquivos obrigatórios
+    foreach ($requiredItem in $requiredApplicationItems) {
+        $requiredPath = Join-Path $frontendAppPath $requiredItem
+
+        if (-not (Test-Path $requiredPath)) {
+            throw "Item obrigatorio nao encontrado no pacote frontend: $requiredItem"
+        }
+    }
+
+    Write-Step "Configurando endereco privado do backend no web.config"
+
+    # Caminho do web.config do frontend
+    $webConfigPath = Join-Path $frontendAppPath "web.config"
+
+    # Lê o conteúdo atual do web.config
+    $webConfigContent = [System.IO.File]::ReadAllText($webConfigPath)
+
+    # Substitui o placeholder pelo endereço privado da VM backend
+    if ($webConfigContent.Contains($backendPlaceholder)) {
+        $webConfigContent = $webConfigContent.Replace(
+            $backendPlaceholder,
+            $backendUrl
+        )
+
+        # Define UTF-8 sem BOM para preservar o XML corretamente
+        $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
+
+        [System.IO.File]::WriteAllText(
+            $webConfigPath,
+            $webConfigContent,
+            $utf8WithoutBom
+        )
+    }
+
+    # Valida o conteúdo configurado
+    $configuredWebConfig = [System.IO.File]::ReadAllText($webConfigPath)
+
+    if ($configuredWebConfig.Contains($backendPlaceholder)) {
+        throw "O placeholder $backendPlaceholder ainda existe no web.config."
+    }
+
+    if (-not $configuredWebConfig.Contains($backendUrl)) {
+        throw "O endereco do backend nao foi encontrado no web.config: $backendUrl"
+    }
+
+    Write-Host "Backend configurado no proxy: $backendUrl" -ForegroundColor Green
+
+    Write-Step "Configurando permissoes do frontend"
+
+    # Concede permissão de leitura e execução ao grupo do IIS
+    & icacls.exe `
+        $frontendAppPath `
+        /grant "IIS_IUSRS:(OI)(CI)RX" `
+        /T `
+        /C |
+        Out-Null
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Falha ao configurar permissoes para IIS_IUSRS."
+    }
+
+    Write-Step "Criando Application Pool do frontend"
+
+    # Cria o Application Pool
+    New-WebAppPool `
+        -Name $frontendAppPoolName |
+        Out-Null
+
+    # Configura o Application Pool como No Managed Code
+    Set-ItemProperty `
+        -Path $frontendAppPoolPath `
+        -Name "managedRuntimeVersion" `
+        -Value ""
+
+    # Configura inicialização automática
+    Set-ItemProperty `
+        -Path $frontendAppPoolPath `
+        -Name "startMode" `
+        -Value "AlwaysRunning"
+
+    # Usa ApplicationPoolIdentity
+    Set-ItemProperty `
+        -Path $frontendAppPoolPath `
+        -Name "processModel.identityType" `
+        -Value 4
+
+    Write-Step "Criando site IIS do frontend"
+
+    # Cria o site do frontend na porta definida
+    New-Website `
+        -Name $frontendSiteName `
+        -PhysicalPath $frontendAppPath `
+        -Port $frontendPort `
+        -IPAddress "*" `
+        -ApplicationPool $frontendAppPoolName `
+        -Force |
+        Out-Null
+
+    # Configura o site para iniciar automaticamente
+    Set-ItemProperty `
+        -Path $frontendSitePath `
+        -Name "serverAutoStart" `
+        -Value $true
+
+    # Inicia o Application Pool
+    Start-WebAppPool `
+        -Name $frontendAppPoolName
+
+    # Inicia o site
+    Start-Website `
+        -Name $frontendSiteName
+
+    Write-Step "Reiniciando IIS"
+
+    # Reinicia o IIS para carregar todos os módulos
+    & iisreset.exe /restart
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Falha ao reiniciar o IIS."
+    }
+
+    # Confirma que o serviço principal do IIS está em execução
+    $w3svc = Get-Service -Name "W3SVC"
+
+    if ($w3svc.Status -ne "Running") {
+        Start-Service -Name "W3SVC"
+    }
+
+    # Confirma que o site está iniciado
+    $website = Get-Website -Name $frontendSiteName
+
+    if ($website.State -ne "Started") {
+        Start-Website -Name $frontendSiteName
+    }
+
+    # Monta o endereço local do frontend
+    if ($frontendPort -eq 80) {
+        $frontendBaseUrl = "http://localhost"
+    }
+    else {
+        $frontendBaseUrl = "http://localhost`:$frontendPort"
+    }
+
+    Write-Step "Executando smoke test do frontend"
+
+    # Testa a página principal do frontend
+    $frontendHealthcheckUri = "$frontendBaseUrl$frontendHealthcheckPath"
+
+    Test-HttpEndpoint `
+        -Uri $frontendHealthcheckUri `
+        -Attempts 12 `
+        -DelaySeconds 10 `
+        -Required |
+        Out-Null
+
+    Write-Step "Executando smoke test do proxy para o backend"
+
+    # Testa o proxy reverso até a API
+    $proxyHealthcheckUri = "$frontendBaseUrl$proxyHealthcheckPath"
+
+    $proxySucceeded = Test-HttpEndpoint `
+        -Uri $proxyHealthcheckUri `
+        -Attempts 12 `
+        -DelaySeconds 10
+
+    # O frontend permanece instalado mesmo se banco ou backend ainda não responderem
+    if (-not $proxySucceeded) {
+        Write-Warning "O frontend foi instalado, mas o proxy ainda nao respondeu em $proxyHealthcheckUri."
+        Write-Warning "Verifique a VM backend, o banco, a NSG e o peering."
+    }
+
+    Write-Step "Configuracao da VM frontend concluida"
+
+    # Exibe o resumo da configuração realizada
+    Write-Host "Site: $frontendSiteName" -ForegroundColor Green
+    Write-Host "Application Pool: $frontendAppPoolName" -ForegroundColor Green
+    Write-Host "Diretorio: $frontendAppPath" -ForegroundColor Green
+    Write-Host "Backend privado: $backendUrl" -ForegroundColor Green
+    Write-Host "Proxy ARR habilitado: $($proxyEnabled.Value)" -ForegroundColor Green
+    Write-Host "Log: $logFile" -ForegroundColor Green
+}
+catch {
+    # Registra e devolve o erro para a Custom Script Extension
+    Write-Error "Falha na configuracao da VM frontend: $($_.Exception.Message)"
+    throw
+}
+finally {
+    # Finaliza a gravação do log
+    Stop-Transcript -ErrorAction SilentlyContinue
+}

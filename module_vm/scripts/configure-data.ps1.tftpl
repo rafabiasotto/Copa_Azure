@@ -1,0 +1,415 @@
+# Interrompe o script quando qualquer comando gerar erro
+$ErrorActionPreference = "Stop"
+
+# Evita mensagens de progresso excessivas durante downloads
+$ProgressPreference = "SilentlyContinue"
+
+# Habilita TLS 1.2 para downloads
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# Diretórios utilizados durante a configuração da VM Data
+$logDirectory  = "C:\Terraform\Logs"
+$workDirectory = "C:\Terraform\Data"
+$toolDirectory = "C:\Terraform\Tools\SqlPackage"
+$logFile       = Join-Path $logDirectory "configure-data.log"
+
+# Cria os diretórios de trabalho e logs
+New-Item -Path $logDirectory -ItemType Directory -Force | Out-Null
+New-Item -Path $workDirectory -ItemType Directory -Force | Out-Null
+New-Item -Path $toolDirectory -ItemType Directory -Force | Out-Null
+
+# Inicia a gravação do log da configuração
+Start-Transcript -Path $logFile -Append
+
+try {
+    # Carrega classes .NET para conexão SQL
+    Add-Type -AssemblyName System.Data
+
+    # Converte um valor recebido em Base64 pelo template Terraform
+    function ConvertFrom-Base64Value {
+        param(
+            [Parameter(Mandatory)]
+            [string]$Value
+        )
+
+        return [System.Text.Encoding]::UTF8.GetString(
+            [System.Convert]::FromBase64String($Value)
+        )
+    }
+
+    # Exibe uma etapa formatada no log
+    function Write-Step {
+        param(
+            [Parameter(Mandatory)]
+            [string]$Message
+        )
+
+        Write-Host ""
+        Write-Host "============================================================"
+        Write-Host $Message -ForegroundColor Cyan
+        Write-Host "============================================================"
+    }
+
+    # Faz download de um arquivo e valida se ele foi criado corretamente
+    function Invoke-FileDownload {
+        param(
+            [Parameter(Mandatory)]
+            [string]$Uri,
+
+            [Parameter(Mandatory)]
+            [string]$Destination
+        )
+
+        if (Test-Path $Destination) {
+            Remove-Item -Path $Destination -Force
+        }
+
+        Invoke-WebRequest `
+            -Uri $Uri `
+            -OutFile $Destination `
+            -UseBasicParsing `
+            -Headers @{
+                "User-Agent" = "Terraform-CustomScriptExtension"
+            }
+
+        if (-not (Test-Path $Destination)) {
+            throw "O arquivo nao foi baixado: $Destination"
+        }
+
+        if ((Get-Item $Destination).Length -eq 0) {
+            throw "O arquivo baixado esta vazio: $Destination"
+        }
+    }
+
+    # Executa uma consulta SQL escalar e retorna o primeiro valor
+    function Invoke-SqlScalar {
+        param(
+            [Parameter(Mandatory)]
+            [string]$Database,
+
+            [Parameter(Mandatory)]
+            [string]$Query
+        )
+
+        $connectionStringBuilder = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
+        $connectionStringBuilder.DataSource = "tcp:localhost,$databasePort"
+        $connectionStringBuilder.InitialCatalog = $Database
+        $connectionStringBuilder.UserID = $databaseUsername
+        $connectionStringBuilder.Password = $databasePassword
+        $connectionStringBuilder.Encrypt = $false
+        $connectionStringBuilder.TrustServerCertificate = $true
+        $connectionStringBuilder.ConnectTimeout = 30
+
+        $connection = New-Object System.Data.SqlClient.SqlConnection(
+            $connectionStringBuilder.ConnectionString
+        )
+
+        $command = $connection.CreateCommand()
+        $command.CommandText = $Query
+        $command.CommandTimeout = 120
+
+        try {
+            $connection.Open()
+            return $command.ExecuteScalar()
+        }
+        finally {
+            $connection.Close()
+            $connection.Dispose()
+        }
+    }
+
+    # Procura o SqlPackage já instalado na VM antes de baixar uma cópia standalone
+    function Get-ExistingSqlPackagePath {
+        $knownPaths = @(
+            "C:\Program Files\Microsoft SQL Server\160\DAC\bin\SqlPackage.exe",
+            "C:\Program Files\Microsoft SQL Server\150\DAC\bin\SqlPackage.exe",
+            "C:\Program Files (x86)\Microsoft SQL Server\160\DAC\bin\SqlPackage.exe",
+            "C:\Program Files (x86)\Microsoft SQL Server\150\DAC\bin\SqlPackage.exe",
+            "C:\Program Files\Microsoft SQL Server Management Studio 20\Common7\IDE\Extensions\Microsoft\SQLDB\DAC\SqlPackage.exe",
+            "C:\Program Files (x86)\Microsoft SQL Server Management Studio 20\Common7\IDE\Extensions\Microsoft\SQLDB\DAC\SqlPackage.exe",
+            "C:\Program Files\Microsoft SQL Server Management Studio 19\Common7\IDE\Extensions\Microsoft\SQLDB\DAC\SqlPackage.exe",
+            "C:\Program Files (x86)\Microsoft SQL Server Management Studio 19\Common7\IDE\Extensions\Microsoft\SQLDB\DAC\SqlPackage.exe"
+        )
+
+        foreach ($knownPath in $knownPaths) {
+            if (Test-Path $knownPath) {
+                return $knownPath
+            }
+        }
+
+        $searchRoots = @(
+            "C:\Program Files\Microsoft SQL Server",
+            "C:\Program Files (x86)\Microsoft SQL Server",
+            "C:\Program Files\Microsoft SQL Server Management Studio*",
+            "C:\Program Files (x86)\Microsoft SQL Server Management Studio*"
+        )
+
+        foreach ($searchRoot in $searchRoots) {
+            $resolvedRoots = @(
+                Get-Item `
+                    -Path $searchRoot `
+                    -ErrorAction SilentlyContinue
+            )
+
+            foreach ($resolvedRoot in $resolvedRoots) {
+                $sqlPackage = Get-ChildItem `
+                    -Path $resolvedRoot.FullName `
+                    -Filter "SqlPackage.exe" `
+                    -Recurse `
+                    -ErrorAction SilentlyContinue |
+                    Select-Object -First 1
+
+                if ($null -ne $sqlPackage) {
+                    return $sqlPackage.FullName
+                }
+            }
+        }
+
+        return $null
+    }
+
+    # Obtém o SqlPackage existente ou baixa a versão standalone informada no terraform.tfvars
+    function Get-SqlPackagePath {
+        $existingSqlPackagePath = Get-ExistingSqlPackagePath
+
+        if (-not [string]::IsNullOrWhiteSpace($existingSqlPackagePath)) {
+            Write-Host "SqlPackage encontrado na VM: $existingSqlPackagePath" -ForegroundColor Green
+            return $existingSqlPackagePath
+        }
+
+        Write-Host "SqlPackage nao encontrado na VM. Baixando pacote standalone..." -ForegroundColor Yellow
+
+        $sqlPackageZipPath = Join-Path $workDirectory "sqlpackage.zip"
+
+        Invoke-FileDownload `
+            -Uri $sqlPackageZipUrl `
+            -Destination $sqlPackageZipPath
+
+        if (Test-Path $toolDirectory) {
+            Remove-Item `
+                -Path $toolDirectory `
+                -Recurse `
+                -Force
+        }
+
+        New-Item `
+            -Path $toolDirectory `
+            -ItemType Directory `
+            -Force |
+            Out-Null
+
+        Expand-Archive `
+            -Path $sqlPackageZipPath `
+            -DestinationPath $toolDirectory `
+            -Force
+
+        $downloadedSqlPackage = Get-ChildItem `
+            -Path $toolDirectory `
+            -Filter "SqlPackage.exe" `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+        if ($null -eq $downloadedSqlPackage) {
+            throw "SqlPackage.exe nao foi encontrado apos extrair o ZIP."
+        }
+
+        return $downloadedSqlPackage.FullName
+    }
+
+    # Recupera as URLs recebidas pelo Terraform
+    $bacpacUrl        = ConvertFrom-Base64Value '${bacpac_url_b64}'
+    $sqlPackageZipUrl = ConvertFrom-Base64Value '${sqlpackage_zip_url_b64}'
+
+    # Recupera as configurações do banco
+    $databaseName     = ConvertFrom-Base64Value '${database_name_b64}'
+    $databaseUsername = ConvertFrom-Base64Value '${database_username_b64}'
+    $databasePassword = ConvertFrom-Base64Value '${database_password_b64}'
+
+    # Recupera as quantidades esperadas para validação do banco
+    $expectedMatchesCount  = ${expected_matches_count}
+    $expectedStadiumsCount = ${expected_stadiums_count}
+    $expectedTeamsCount    = ${expected_teams_count}
+
+    # Porta SQL configurada na SQL Virtual Machine
+    $databasePort = 1433
+
+    Write-Step "Desabilitando Windows Firewall"
+
+    # Desabilita o Windows Firewall nos três perfis
+    Set-NetFirewallProfile `
+        -Profile Domain, Private, Public `
+        -Enabled False
+
+    Write-Step "Desabilitando IE Enhanced Security Configuration"
+
+    # Chaves do IE Enhanced Security Configuration
+    $adminKey = "HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A7-37EF-4b3f-8CFC-4F3A74704073}"
+    $userKey  = "HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A8-37EF-4b3f-8CFC-4F3A74704073}"
+
+    # Desabilita o IE ESC para administradores
+    if (Test-Path $adminKey) {
+        Set-ItemProperty `
+            -Path $adminKey `
+            -Name "IsInstalled" `
+            -Value 0 `
+            -Force
+    }
+
+    # Desabilita o IE ESC para usuários
+    if (Test-Path $userKey) {
+        Set-ItemProperty `
+            -Path $userKey `
+            -Name "IsInstalled" `
+            -Value 0 `
+            -Force
+    }
+
+    # Encerra processos antigos do Internet Explorer
+    Stop-Process `
+        -Name "iexplore" `
+        -Force `
+        -ErrorAction SilentlyContinue
+
+    Write-Step "Validando servico SQL Server"
+
+    # Aguarda o serviço padrão do SQL Server ficar disponível
+    $sqlService = Get-Service `
+        -Name "MSSQLSERVER" `
+        -ErrorAction Stop
+
+    if ($sqlService.Status -ne "Running") {
+        Start-Service -Name "MSSQLSERVER"
+    }
+
+    $sqlReady = $false
+
+    for ($attempt = 1; $attempt -le 30; $attempt++) {
+        try {
+            $testResult = Invoke-SqlScalar `
+                -Database "master" `
+                -Query "SELECT 1;"
+
+            if ([int]$testResult -eq 1) {
+                $sqlReady = $true
+                break
+            }
+        }
+        catch {
+            Write-Warning "Tentativa $attempt de 30 aguardando SQL Server: $($_.Exception.Message)"
+            Start-Sleep -Seconds 10
+        }
+    }
+
+    if (-not $sqlReady) {
+        throw "SQL Server nao respondeu dentro do tempo esperado."
+    }
+
+    Write-Host "SQL Server respondendo em localhost,$databasePort" -ForegroundColor Green
+
+    Write-Step "Baixando arquivo BACPAC"
+
+    # Caminho local do BACPAC
+    $bacpacPath = Join-Path $workDirectory "$databaseName.bacpac"
+
+    # Baixa o BACPAC usado para restaurar o banco da aplicação
+    Invoke-FileDownload `
+        -Uri $bacpacUrl `
+        -Destination $bacpacPath
+
+    Write-Step "Obtendo SqlPackage"
+
+    # Localiza ou baixa o SqlPackage
+    $sqlPackagePath = Get-SqlPackagePath
+
+    if (-not (Test-Path $sqlPackagePath)) {
+        throw "SqlPackage nao encontrado em: $sqlPackagePath"
+    }
+
+    Write-Step "Verificando se o banco ja existe"
+
+    # Escapa aspas simples no nome do banco para consulta SQL
+    $escapedDatabaseName = $databaseName.Replace("'", "''")
+
+    # Verifica se o banco já existe
+    $databaseExists = Invoke-SqlScalar `
+        -Database "master" `
+        -Query "SELECT CASE WHEN DB_ID(N'$escapedDatabaseName') IS NULL THEN 0 ELSE 1 END;"
+
+    if ([int]$databaseExists -eq 1) {
+        Write-Host "Banco $databaseName ja existe. Importacao do BACPAC sera ignorada." -ForegroundColor Yellow
+    }
+    else {
+        Write-Step "Importando BACPAC para o banco $databaseName"
+
+        # Argumentos do SqlPackage para importar o BACPAC no SQL Server local
+        $sqlPackageArguments = @(
+            "/Action:Import",
+            "/SourceFile:$bacpacPath",
+            "/TargetServerName:localhost,$databasePort",
+            "/TargetDatabaseName:$databaseName",
+            "/TargetUser:$databaseUsername",
+            "/TargetPassword:$databasePassword",
+            "/TargetEncryptConnection:False",
+            "/TargetTrustServerCertificate:True"
+        )
+
+        & $sqlPackagePath @sqlPackageArguments
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "Falha ao importar o BACPAC. ExitCode: $LASTEXITCODE"
+        }
+
+        Write-Host "BACPAC importado com sucesso para o banco $databaseName." -ForegroundColor Green
+    }
+
+    Write-Step "Validando dados importados"
+
+    # Valida quantidade de partidas
+    $matchesCount = Invoke-SqlScalar `
+        -Database $databaseName `
+        -Query "SELECT COUNT(*) FROM matches;"
+
+    # Valida quantidade de estádios
+    $stadiumsCount = Invoke-SqlScalar `
+        -Database $databaseName `
+        -Query "SELECT COUNT(*) FROM stadiums;"
+
+    # Valida quantidade de seleções
+    $teamsCount = Invoke-SqlScalar `
+        -Database $databaseName `
+        -Query "SELECT COUNT(*) FROM teams;"
+
+    Write-Host "matches:  $matchesCount" -ForegroundColor Green
+    Write-Host "stadiums: $stadiumsCount" -ForegroundColor Green
+    Write-Host "teams:    $teamsCount" -ForegroundColor Green
+
+    if ([int]$matchesCount -ne $expectedMatchesCount) {
+        throw "Quantidade invalida em matches. Esperado: $expectedMatchesCount. Atual: $matchesCount."
+    }
+
+    if ([int]$stadiumsCount -ne $expectedStadiumsCount) {
+        throw "Quantidade invalida em stadiums. Esperado: $expectedStadiumsCount. Atual: $stadiumsCount."
+    }
+
+    if ([int]$teamsCount -ne $expectedTeamsCount) {
+        throw "Quantidade invalida em teams. Esperado: $expectedTeamsCount. Atual: $teamsCount."
+    }
+
+    Write-Step "Configuracao da VM Data concluida"
+
+    # Exibe o resumo da configuração realizada
+    Write-Host "Banco: $databaseName" -ForegroundColor Green
+    Write-Host "BACPAC: $bacpacPath" -ForegroundColor Green
+    Write-Host "SqlPackage: $sqlPackagePath" -ForegroundColor Green
+    Write-Host "Log: $logFile" -ForegroundColor Green
+}
+catch {
+    # Registra e devolve o erro para a Custom Script Extension
+    Write-Error "Falha na configuracao da VM Data: $($_.Exception.Message)"
+    throw
+}
+finally {
+    # Finaliza a gravação do log
+    Stop-Transcript -ErrorAction SilentlyContinue
+}

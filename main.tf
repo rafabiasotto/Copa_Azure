@@ -27,19 +27,63 @@ module "module_network" {
 module "module_vm" {
   source = "./module_vm"
 
-  rg_name_cus        = azurerm_resource_group.rg_cus.name
-  rg_location_cus    = azurerm_resource_group.rg_cus.location
-  snet_fend_cus_id   = module.module_network.snet_fend_cus_id
-  vm_name_fend_cus   = var.vm_name_fend_cus
-  admin_username     = var.admin_username
-  admin_password     = var.admin_password
-  snet_bend_cus_id   = module.module_network.snet_bend_cus_id
-  vm_name_bend_cus   = var.vm_name_bend_cus
-  snet_data_cin_id   = module.module_network.snet_data_cin_id
-  vm_name_data_cin   = var.vm_name_data_cin
-  rg_location_cin    = var.location_cin
-  sql_admin_username = var.sql_admin_username
-  sql_admin_password = var.sql_admin_password
+  rg_name_cus              = azurerm_resource_group.rg_cus.name
+  rg_location_cus          = azurerm_resource_group.rg_cus.location
+  snet_fend_cus_id         = module.module_network.snet_fend_cus_id
+  vm_name_fend_cus         = var.vm_name_fend_cus
+  admin_username           = var.admin_username
+  admin_password           = var.admin_password
+  snet_bend_cus_id         = module.module_network.snet_bend_cus_id
+  vm_name_bend_cus         = var.vm_name_bend_cus
+  snet_data_cin_id         = module.module_network.snet_data_cin_id
+  vm_name_data_cin         = var.vm_name_data_cin
+  rg_location_cin          = var.location_cin
+  sql_admin_username       = var.sql_admin_username
+  sql_admin_password       = var.sql_admin_password
+  backend_zip_url          = var.backend_zip_url
+  node_major_version       = var.node_major_version
+  iisnode_msi_url          = var.iisnode_msi_url
+  url_rewrite_msi_url      = var.url_rewrite_msi_url
+  backend_site_name        = var.backend_site_name
+  backend_app_pool_name    = var.backend_app_pool_name
+  backend_app_path         = var.backend_app_path
+  backend_database_name    = var.backend_database_name
+  backend_host             = var.backend_host
+  backend_port             = var.backend_port
+  backend_jwt_secret       = var.backend_jwt_secret
+  backend_jwt_expires_in   = var.backend_jwt_expires_in
+  backend_frontend_url     = var.backend_frontend_url
+  backend_healthcheck_path = var.backend_healthcheck_path
+  # URL do pacote compilado da aplicação frontend
+  frontend_zip_url = var.frontend_zip_url
+
+  # URLs dos instaladores necessários para o ARR
+  external_cache_msi_url = var.external_cache_msi_url
+  arr_msi_url            = var.arr_msi_url
+
+  # Configurações do site e Application Pool do frontend
+  frontend_site_name     = var.frontend_site_name
+  frontend_app_pool_name = var.frontend_app_pool_name
+  frontend_app_path      = var.frontend_app_path
+  frontend_port          = var.frontend_port
+
+  # Configuração dinâmica do endereço privado do backend
+  frontend_backend_placeholder = var.frontend_backend_placeholder
+
+  # Endpoints utilizados nos testes da aplicação
+  frontend_healthcheck_path       = var.frontend_healthcheck_path
+  frontend_proxy_healthcheck_path = var.frontend_proxy_healthcheck_path
+
+  # URL do BACPAC utilizado para restaurar o banco na VM Data
+  data_bacpac_url = var.data_bacpac_url
+
+  # URL do SqlPackage utilizado para importar o BACPAC
+  sqlpackage_zip_url = var.sqlpackage_zip_url
+
+  # Quantidades esperadas para validar a importação do banco
+  data_expected_matches_count  = var.data_expected_matches_count
+  data_expected_stadiums_count = var.data_expected_stadiums_count
+  data_expected_teams_count    = var.data_expected_teams_count
 }
 
 # Permite acesso RDP às VMs frontend e backend em Central US

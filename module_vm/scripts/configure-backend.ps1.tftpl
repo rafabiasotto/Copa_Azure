@@ -1,0 +1,559 @@
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+$logDirectory = "C:\Terraform\Logs"
+$workDirectory = "C:\Terraform\Backend"
+$logFile = Join-Path $logDirectory "configure-backend.log"
+
+New-Item -Path $logDirectory -ItemType Directory -Force | Out-Null
+New-Item -Path $workDirectory -ItemType Directory -Force | Out-Null
+
+Start-Transcript -Path $logFile -Append
+
+try {
+    function ConvertFrom-Base64Value {
+        param(
+            [Parameter(Mandatory)]
+            [string]$Value
+        )
+
+        return [System.Text.Encoding]::UTF8.GetString(
+            [System.Convert]::FromBase64String($Value)
+        )
+    }
+
+    function ConvertTo-DotEnvValue {
+        param(
+            [AllowEmptyString()]
+            [string]$Value
+        )
+
+        $escapedValue = $Value `
+            .Replace('\', '\\') `
+            .Replace('"', '\"') `
+            .Replace("`r", '\r') `
+            .Replace("`n", '\n')
+
+        return '"' + $escapedValue + '"'
+    }
+
+    function Write-Step {
+        param(
+            [Parameter(Mandatory)]
+            [string]$Message
+        )
+
+        Write-Host ""
+        Write-Host "============================================================"
+        Write-Host $Message -ForegroundColor Cyan
+        Write-Host "============================================================"
+    }
+
+    function Invoke-FileDownload {
+        param(
+            [Parameter(Mandatory)]
+            [string]$Uri,
+
+            [Parameter(Mandatory)]
+            [string]$Destination
+        )
+
+        if (Test-Path $Destination) {
+            Remove-Item -Path $Destination -Force
+        }
+
+        Invoke-WebRequest `
+            -Uri $Uri `
+            -OutFile $Destination `
+            -UseBasicParsing `
+            -Headers @{
+                "User-Agent" = "Terraform-CustomScriptExtension"
+            }
+
+        if (-not (Test-Path $Destination)) {
+            throw "O arquivo nao foi baixado: $Destination"
+        }
+
+        if ((Get-Item $Destination).Length -eq 0) {
+            throw "O arquivo baixado esta vazio: $Destination"
+        }
+    }
+
+    function Test-ApplicationInstalled {
+        param(
+            [Parameter(Mandatory)]
+            [string]$DisplayNamePattern
+        )
+
+        $registryPaths = @(
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+        )
+
+        $application = Get-ItemProperty `
+            -Path $registryPaths `
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.DisplayName -like $DisplayNamePattern
+            } |
+            Select-Object -First 1
+
+        return $null -ne $application
+    }
+
+    function Install-MsiPackage {
+        param(
+            [Parameter(Mandatory)]
+            [string]$MsiPath,
+
+            [Parameter(Mandatory)]
+            [string]$ApplicationName
+        )
+
+        $arguments = "/i `"$MsiPath`" /qn /norestart"
+
+        $process = Start-Process `
+            -FilePath "msiexec.exe" `
+            -ArgumentList $arguments `
+            -Wait `
+            -PassThru
+
+        if ($process.ExitCode -notin @(0, 3010)) {
+            throw "Falha ao instalar $ApplicationName. ExitCode: $($process.ExitCode)"
+        }
+
+        if ($process.ExitCode -eq 3010) {
+            Write-Warning "$ApplicationName foi instalado e solicitou reinicializacao."
+        }
+    }
+
+    $backendZipUrl = ConvertFrom-Base64Value '${backend_zip_url_b64}'
+    $iisnodeMsiUrl = ConvertFrom-Base64Value '${iisnode_msi_url_b64}'
+    $urlRewriteMsiUrl = ConvertFrom-Base64Value '${url_rewrite_msi_url_b64}'
+
+    $backendSiteName = ConvertFrom-Base64Value '${backend_site_name_b64}'
+    $backendAppPoolName = ConvertFrom-Base64Value '${backend_app_pool_name_b64}'
+    $backendAppPath = ConvertFrom-Base64Value '${backend_app_path_b64}'
+
+    $databasePrivateIp = ConvertFrom-Base64Value '${database_private_ip_b64}'
+    $databaseName = ConvertFrom-Base64Value '${database_name_b64}'
+    $databaseUsername = ConvertFrom-Base64Value '${database_username_b64}'
+    $databasePassword = ConvertFrom-Base64Value '${database_password_b64}'
+
+    $backendHost = ConvertFrom-Base64Value '${backend_host_b64}'
+    $jwtSecret = ConvertFrom-Base64Value '${jwt_secret_b64}'
+    $jwtExpiresIn = ConvertFrom-Base64Value '${jwt_expires_in_b64}'
+    $frontendUrl = ConvertFrom-Base64Value '${frontend_url_b64}'
+    $healthcheckPath = ConvertFrom-Base64Value '${healthcheck_path_b64}'
+
+    $nodeMajorVersion = ${node_major_version}
+    $backendPort = ${backend_port}
+
+    Write-Step "Desabilitando Windows Firewall"
+
+    Set-NetFirewallProfile `
+        -Profile Domain, Private, Public `
+        -Enabled False
+
+    Write-Step "Desabilitando IE Enhanced Security Configuration"
+
+    $adminKey = "HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A7-37EF-4b3f-8CFC-4F3A74704073}"
+    $userKey = "HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A8-37EF-4b3f-8CFC-4F3A74704073}"
+
+    if (Test-Path $adminKey) {
+        Set-ItemProperty `
+            -Path $adminKey `
+            -Name "IsInstalled" `
+            -Value 0 `
+            -Force
+    }
+
+    if (Test-Path $userKey) {
+        Set-ItemProperty `
+            -Path $userKey `
+            -Name "IsInstalled" `
+            -Value 0 `
+            -Force
+    }
+
+    Stop-Process `
+        -Name "iexplore" `
+        -Force `
+        -ErrorAction SilentlyContinue
+
+    Write-Step "Instalando IIS e recursos adicionais"
+
+    $iisFeatures = @(
+        "Web-Server",
+        "Web-WebSockets",
+        "Web-Stat-Compression",
+        "Web-Dyn-Compression",
+        "Web-Scripting-Tools"
+    )
+
+    $iisResult = Install-WindowsFeature `
+        -Name $iisFeatures `
+        -IncludeManagementTools
+
+    if (-not $iisResult.Success) {
+        throw "Falha ao instalar IIS e recursos adicionais."
+    }
+
+    Write-Step "Instalando Node.js"
+
+    $nodeExecutable = "C:\Program Files\nodejs\node.exe"
+
+    if (-not (Test-Path $nodeExecutable)) {
+        $nodeIndexUrl = "https://nodejs.org/dist/index.json"
+
+        $nodeReleases = Invoke-RestMethod `
+            -Uri $nodeIndexUrl `
+            -UseBasicParsing
+
+        $nodeRelease = $nodeReleases |
+            Where-Object {
+                $_.version -like "v$nodeMajorVersion.*" -and
+                ($_.lts -is [string]) -and
+                ($_.files -contains "win-x64-msi")
+            } |
+            Select-Object -First 1
+
+        if ($null -eq $nodeRelease) {
+            throw "Nao foi encontrada uma versao LTS do Node.js major $nodeMajorVersion."
+        }
+
+        $nodeVersion = $nodeRelease.version
+        $nodeMsiUrl = "https://nodejs.org/dist/$nodeVersion/node-$nodeVersion-x64.msi"
+        $nodeMsiPath = Join-Path $workDirectory "node-x64.msi"
+
+        Invoke-FileDownload `
+            -Uri $nodeMsiUrl `
+            -Destination $nodeMsiPath
+
+        Install-MsiPackage `
+            -MsiPath $nodeMsiPath `
+            -ApplicationName "Node.js"
+    }
+
+    $machinePath = [Environment]::GetEnvironmentVariable(
+        "Path",
+        "Machine"
+    )
+
+    $env:Path = "$machinePath;$env:Path"
+
+    if (-not (Test-Path $nodeExecutable)) {
+        throw "Node.js nao foi encontrado depois da instalacao."
+    }
+
+    $installedNodeVersion = & $nodeExecutable --version
+    Write-Host "Node.js instalado: $installedNodeVersion" -ForegroundColor Green
+
+    Write-Step "Instalando IIS URL Rewrite"
+
+    if (-not (Test-ApplicationInstalled -DisplayNamePattern "*URL Rewrite*")) {
+        $urlRewriteMsiPath = Join-Path $workDirectory "url-rewrite-x64.msi"
+
+        Invoke-FileDownload `
+            -Uri $urlRewriteMsiUrl `
+            -Destination $urlRewriteMsiPath
+
+        Install-MsiPackage `
+            -MsiPath $urlRewriteMsiPath `
+            -ApplicationName "IIS URL Rewrite"
+    }
+    else {
+        Write-Host "IIS URL Rewrite ja esta instalado." -ForegroundColor Yellow
+    }
+
+    Write-Step "Instalando iisnode"
+
+    if (-not (Test-ApplicationInstalled -DisplayNamePattern "*iisnode*")) {
+        $iisnodeMsiPath = Join-Path $workDirectory "iisnode-full-x64.msi"
+
+        Invoke-FileDownload `
+            -Uri $iisnodeMsiUrl `
+            -Destination $iisnodeMsiPath
+
+        Install-MsiPackage `
+            -MsiPath $iisnodeMsiPath `
+            -ApplicationName "iisnode"
+    }
+    else {
+        Write-Host "iisnode ja esta instalado." -ForegroundColor Yellow
+    }
+
+    Write-Step "Destravando handlers e modules no IIS"
+
+    $appcmd = "$env:SystemRoot\System32\inetsrv\appcmd.exe"
+
+    if (-not (Test-Path $appcmd)) {
+        throw "appcmd.exe nao foi encontrado."
+    }
+
+    & $appcmd unlock config -section:system.webServer/handlers
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Falha ao destravar system.webServer/handlers."
+    }
+
+    & $appcmd unlock config -section:system.webServer/modules
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Falha ao destravar system.webServer/modules."
+    }
+
+    Write-Step "Removendo configuracao anterior do site"
+
+    Import-Module WebAdministration -Force
+
+    $backendSitePath = "IIS:\Sites\$backendSiteName"
+    $backendAppPoolPath = "IIS:\AppPools\$backendAppPoolName"
+    $defaultSitePath = "IIS:\Sites\Default Web Site"
+
+    if (Test-Path $backendSitePath) {
+        Stop-Website `
+            -Name $backendSiteName `
+            -ErrorAction SilentlyContinue
+
+        Remove-Website `
+            -Name $backendSiteName
+    }
+
+    if (Test-Path $backendAppPoolPath) {
+        Stop-WebAppPool `
+            -Name $backendAppPoolName `
+            -ErrorAction SilentlyContinue
+
+        Remove-WebAppPool `
+            -Name $backendAppPoolName
+    }
+
+    if (Test-Path $defaultSitePath) {
+        Stop-Website `
+            -Name "Default Web Site" `
+            -ErrorAction SilentlyContinue
+
+        Remove-Website `
+            -Name "Default Web Site"
+    }
+
+    Write-Step "Baixando e extraindo a aplicacao backend"
+
+    $backendZipPath = Join-Path $workDirectory "fifa2026-api.zip"
+    $extractDirectory = Join-Path $workDirectory "Extracted"
+
+    if (Test-Path $extractDirectory) {
+        Remove-Item `
+            -Path $extractDirectory `
+            -Recurse `
+            -Force
+    }
+
+    New-Item `
+        -Path $extractDirectory `
+        -ItemType Directory `
+        -Force |
+        Out-Null
+
+    Invoke-FileDownload `
+        -Uri $backendZipUrl `
+        -Destination $backendZipPath
+
+    Expand-Archive `
+        -Path $backendZipPath `
+        -DestinationPath $extractDirectory `
+        -Force
+
+    $packagedApplicationPath = Join-Path $extractDirectory "fifa2026-api"
+
+    if (Test-Path $packagedApplicationPath) {
+        $sourceApplicationPath = $packagedApplicationPath
+    }
+    else {
+        $sourceApplicationPath = $extractDirectory
+    }
+
+    if (Test-Path $backendAppPath) {
+        Remove-Item `
+            -Path $backendAppPath `
+            -Recurse `
+            -Force
+    }
+
+    New-Item `
+        -Path $backendAppPath `
+        -ItemType Directory `
+        -Force |
+        Out-Null
+
+    Copy-Item `
+        -Path (Join-Path $sourceApplicationPath "*") `
+        -Destination $backendAppPath `
+        -Recurse `
+        -Force
+
+    $requiredApplicationItems = @(
+        "package.json",
+        "web.config",
+        "node_modules"
+    )
+
+    foreach ($requiredItem in $requiredApplicationItems) {
+        $requiredPath = Join-Path $backendAppPath $requiredItem
+
+        if (-not (Test-Path $requiredPath)) {
+            throw "Item obrigatorio nao encontrado no pacote da API: $requiredItem"
+        }
+    }
+
+    Write-Step "Criando arquivo .env"
+
+    $environmentFile = Join-Path $backendAppPath ".env"
+
+    $environmentLines = @(
+        "DB_SERVER=$(ConvertTo-DotEnvValue $databasePrivateIp)",
+        "DB_PORT=1433",
+        "DB_USER=$(ConvertTo-DotEnvValue $databaseUsername)",
+        "DB_PASSWORD=$(ConvertTo-DotEnvValue $databasePassword)",
+        "DB_NAME=$(ConvertTo-DotEnvValue $databaseName)",
+        "PORT=$backendPort",
+        "HOST=$(ConvertTo-DotEnvValue $backendHost)",
+        "JWT_SECRET=$(ConvertTo-DotEnvValue $jwtSecret)",
+        "JWT_EXPIRES_IN=$(ConvertTo-DotEnvValue $jwtExpiresIn)",
+        "FRONTEND_URL=$(ConvertTo-DotEnvValue $frontendUrl)"
+    )
+
+    $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
+
+    [System.IO.File]::WriteAllLines(
+        $environmentFile,
+        $environmentLines,
+        $utf8WithoutBom
+    )
+
+    if (-not (Test-Path $environmentFile)) {
+        throw "O arquivo .env nao foi criado."
+    }
+
+    Write-Step "Configurando permissoes da aplicacao"
+
+    & icacls.exe `
+        $backendAppPath `
+        /grant "IIS_IUSRS:(OI)(CI)F" `
+        /T `
+        /C |
+        Out-Null
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Falha ao configurar permissoes para IIS_IUSRS."
+    }
+
+    Write-Step "Criando Application Pool"
+
+    New-WebAppPool `
+        -Name $backendAppPoolName |
+        Out-Null
+
+    Set-ItemProperty `
+        -Path $backendAppPoolPath `
+        -Name "managedRuntimeVersion" `
+        -Value ""
+
+    Set-ItemProperty `
+        -Path $backendAppPoolPath `
+        -Name "startMode" `
+        -Value "AlwaysRunning"
+
+    Set-ItemProperty `
+        -Path $backendAppPoolPath `
+        -Name "processModel.identityType" `
+        -Value 4
+
+    Write-Step "Criando site IIS da API"
+
+    New-Website `
+        -Name $backendSiteName `
+        -PhysicalPath $backendAppPath `
+        -Port $backendPort `
+        -IPAddress "*" `
+        -ApplicationPool $backendAppPoolName `
+        -Force |
+        Out-Null
+
+    Set-ItemProperty `
+        -Path $backendSitePath `
+        -Name "serverAutoStart" `
+        -Value $true
+
+    Start-WebAppPool `
+        -Name $backendAppPoolName
+
+    Start-Website `
+        -Name $backendSiteName
+
+    Write-Step "Reiniciando IIS"
+
+    & iisreset.exe /restart
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Falha ao reiniciar o IIS."
+    }
+
+    $w3svc = Get-Service -Name "W3SVC"
+
+    if ($w3svc.Status -ne "Running") {
+        Start-Service -Name "W3SVC"
+    }
+
+    $website = Get-Website -Name $backendSiteName
+
+    if ($website.State -ne "Started") {
+        Start-Website -Name $backendSiteName
+    }
+
+    Write-Step "Executando smoke test local"
+
+    $healthcheckUri = "http://localhost:$backendPort$healthcheckPath"
+    $healthcheckSucceeded = $false
+
+    for ($attempt = 1; $attempt -le 12; $attempt++) {
+        try {
+            $healthResponse = Invoke-RestMethod `
+                -Uri $healthcheckUri `
+                -TimeoutSec 15
+
+            Write-Host "Health check respondido com sucesso." -ForegroundColor Green
+            $healthResponse | Format-List
+
+            $healthcheckSucceeded = $true
+            break
+        }
+        catch {
+            Write-Warning "Tentativa $attempt de 12 falhou: $($_.Exception.Message)"
+            Start-Sleep -Seconds 10
+        }
+    }
+
+    if (-not $healthcheckSucceeded) {
+        Write-Warning "O backend foi instalado, mas o endpoint $healthcheckUri ainda nao respondeu."
+        Write-Warning "Isso pode ocorrer enquanto o banco FIFA2026Tickets ainda nao foi importado."
+    }
+
+    Write-Step "Configuracao da VM backend concluida"
+
+    Write-Host "Site: $backendSiteName" -ForegroundColor Green
+    Write-Host "Application Pool: $backendAppPoolName" -ForegroundColor Green
+    Write-Host "Diretorio: $backendAppPath" -ForegroundColor Green
+    Write-Host "Banco: $databasePrivateIp\$databaseName" -ForegroundColor Green
+    Write-Host "Log: $logFile" -ForegroundColor Green
+}
+catch {
+    Write-Error "Falha na configuracao da VM backend: $($_.Exception.Message)"
+    throw
+}
+finally {
+    Stop-Transcript -ErrorAction SilentlyContinue
+}

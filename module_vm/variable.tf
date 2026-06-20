@@ -64,3 +64,164 @@ variable "sql_admin_password" {
   type        = string
   sensitive   = true
 }
+
+variable "backend_zip_url" {
+  description = "URL do arquivo ZIP da aplicação backend"
+  type        = string
+}
+
+variable "node_major_version" {
+  description = "Versão major do Node.js LTS usada no backend"
+  type        = number
+}
+
+variable "iisnode_msi_url" {
+  description = "URL do instalador MSI x64 do iisnode"
+  type        = string
+}
+
+variable "url_rewrite_msi_url" {
+  description = "URL do instalador MSI x64 do IIS URL Rewrite"
+  type        = string
+}
+
+variable "backend_site_name" {
+  description = "Nome do site backend no IIS"
+  type        = string
+}
+
+variable "backend_app_pool_name" {
+  description = "Nome do Application Pool do backend"
+  type        = string
+}
+
+variable "backend_app_path" {
+  description = "Diretório da aplicação backend na VM"
+  type        = string
+}
+
+variable "backend_database_name" {
+  description = "Nome do banco de dados utilizado pelo backend"
+  type        = string
+}
+
+variable "backend_host" {
+  description = "Endereço no qual a aplicação Node.js escutará"
+  type        = string
+}
+
+variable "backend_port" {
+  description = "Porta utilizada pela aplicação backend"
+  type        = number
+}
+
+variable "backend_jwt_secret" {
+  description = "Segredo utilizado para assinatura dos tokens JWT"
+  type        = string
+  sensitive   = true
+}
+
+variable "backend_jwt_expires_in" {
+  description = "Tempo de validade dos tokens JWT"
+  type        = string
+}
+
+variable "backend_frontend_url" {
+  description = "Origem permitida pelo CORS da aplicação backend"
+  type        = string
+}
+
+variable "backend_healthcheck_path" {
+  description = "Caminho do endpoint de health check do backend"
+  type        = string
+}
+
+# URL do arquivo ZIP compilado da aplicação frontend
+variable "frontend_zip_url" {
+  description = "URL do arquivo ZIP compilado da aplicação frontend"
+  type        = string
+}
+
+# URL do instalador MSI x64 do IIS External Cache
+variable "external_cache_msi_url" {
+  description = "URL do instalador MSI x64 do IIS External Cache utilizado pelo ARR"
+  type        = string
+}
+
+# URL do instalador MSI x64 do Application Request Routing
+variable "arr_msi_url" {
+  description = "URL do instalador MSI x64 do Application Request Routing"
+  type        = string
+}
+
+# Nome do site frontend criado no IIS
+variable "frontend_site_name" {
+  description = "Nome do site frontend criado no IIS"
+  type        = string
+}
+
+# Nome do Application Pool utilizado pelo frontend
+variable "frontend_app_pool_name" {
+  description = "Nome do Application Pool utilizado pelo site frontend"
+  type        = string
+}
+
+# Diretório de publicação da aplicação frontend
+variable "frontend_app_path" {
+  description = "Diretório onde os arquivos da aplicação frontend serão publicados"
+  type        = string
+}
+
+# Porta utilizada pelo site frontend
+variable "frontend_port" {
+  description = "Porta HTTP utilizada pelo site frontend no IIS"
+  type        = number
+}
+
+# Placeholder do endereço do backend no web.config
+variable "frontend_backend_placeholder" {
+  description = "Placeholder do web.config que será substituído pelo endereço privado do backend"
+  type        = string
+}
+
+# Caminho usado para validar a página principal
+variable "frontend_healthcheck_path" {
+  description = "Caminho HTTP utilizado para validar a página principal do frontend"
+  type        = string
+}
+
+# Caminho usado para validar o proxy reverso
+variable "frontend_proxy_healthcheck_path" {
+  description = "Caminho HTTP utilizado para validar o proxy reverso até o backend"
+  type        = string
+}
+
+# URL do arquivo BACPAC utilizado para restaurar o banco da aplicação
+variable "data_bacpac_url" {
+  description = "URL do arquivo BACPAC utilizado para restaurar o banco da aplicação na VM Data"
+  type        = string
+}
+
+# URL do pacote ZIP standalone do SqlPackage
+variable "sqlpackage_zip_url" {
+  description = "URL do pacote ZIP standalone do SqlPackage utilizado para importar o BACPAC"
+  type        = string
+}
+
+# Quantidade esperada de partidas no banco
+variable "data_expected_matches_count" {
+  description = "Quantidade esperada de registros na tabela matches após a importação do BACPAC"
+  type        = number
+}
+
+# Quantidade esperada de estádios no banco
+variable "data_expected_stadiums_count" {
+  description = "Quantidade esperada de registros na tabela stadiums após a importação do BACPAC"
+  type        = number
+}
+
+# Quantidade esperada de seleções no banco
+variable "data_expected_teams_count" {
+  description = "Quantidade esperada de registros na tabela teams após a importação do BACPAC"
+  type        = number
+}
