@@ -225,3 +225,35 @@ variable "data_expected_teams_count" {
   description = "Quantidade esperada de registros na tabela teams após a importação do BACPAC"
   type        = number
 }
+
+# Habilita ou desabilita a configuração HTTPS no site frontend
+variable "frontend_https_enabled" {
+  description = "Define se o Custom Script da VM frontend deve configurar o binding HTTPS"
+  type        = bool
+}
+
+# Certificado PFX em Base64 recebido do provider ACME
+variable "frontend_certificate_pfx_base64" {
+  description = "Certificado PFX em Base64 utilizado para configurar o HTTPS no IIS da VM frontend"
+  type        = string
+  sensitive   = true
+}
+
+# Senha do certificado PFX usado no IIS
+variable "frontend_certificate_pfx_password" {
+  description = "Senha do certificado PFX usado para importar o certificado no Windows"
+  type        = string
+  sensitive   = true
+}
+
+# Hostname configurado no binding HTTPS do IIS
+variable "frontend_certificate_hostname" {
+  description = "Hostname configurado no binding HTTPS do IIS da VM frontend"
+  type        = string
+}
+
+# Caminho utilizado para teste HTTPS após configurar o certificado
+variable "frontend_https_healthcheck_path" {
+  description = "Caminho utilizado para validar o HTTPS localmente após configurar o certificado"
+  type        = string
+}

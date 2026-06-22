@@ -105,7 +105,7 @@ locals {
         var.frontend_backend_placeholder
       )
 
-      # Endpoints utilizados nos testes da aplicação
+      # Endpoints utilizados nos testes HTTP
       frontend_healthcheck_path_b64 = base64encode(
         var.frontend_healthcheck_path
       )
@@ -113,6 +113,13 @@ locals {
       proxy_healthcheck_path_b64 = base64encode(
         var.frontend_proxy_healthcheck_path
       )
+
+      # Configurações HTTPS do frontend
+      frontend_https_enabled       = var.frontend_https_enabled
+      certificate_pfx_base64_b64   = base64encode(var.frontend_certificate_pfx_base64)
+      certificate_pfx_password_b64 = base64encode(var.frontend_certificate_pfx_password)
+      certificate_hostname_b64     = base64encode(var.frontend_certificate_hostname)
+      https_healthcheck_path_b64   = base64encode(var.frontend_https_healthcheck_path)
 
       # Portas utilizadas pelo frontend e backend
       frontend_port = var.frontend_port
@@ -169,7 +176,7 @@ resource "azurerm_virtual_machine_extension" "configure_bend_cus" {
   ]
 }
 
-# Configura completamente a VM frontend com IIS, URL Rewrite, ARR e aplicação web
+# Configura completamente a VM frontend com IIS, URL Rewrite, ARR, aplicação web e HTTPS
 resource "azurerm_virtual_machine_extension" "configure_fend_cus" {
   name                       = "configure-windows-fend"
   virtual_machine_id         = azurerm_windows_virtual_machine.vm_fend_cus.id
@@ -178,12 +185,12 @@ resource "azurerm_virtual_machine_extension" "configure_fend_cus" {
   type_handler_version       = "1.10"
   auto_upgrade_minor_version = true
 
-  # Usa protected_settings para evitar que o script completo apareça no plano
+  # Usa protected_settings porque o script contém certificado PFX e senha do PFX
   protected_settings = jsonencode({
     commandToExecute = local.configure_fend_cus_command
   })
 
-  # Aguarda a configuração da VM backend antes de configurar o proxy
+  # Aguarda a configuração da VM backend antes de configurar o proxy e o HTTPS
   depends_on = [
     azurerm_virtual_machine_extension.configure_bend_cus
   ]

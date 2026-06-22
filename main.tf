@@ -84,6 +84,21 @@ module "module_vm" {
   data_expected_matches_count  = var.data_expected_matches_count
   data_expected_stadiums_count = var.data_expected_stadiums_count
   data_expected_teams_count    = var.data_expected_teams_count
+
+  # Habilita a configuração HTTPS no frontend
+  frontend_https_enabled = true
+
+  # Certificado PFX gerado pelo ACME
+  frontend_certificate_pfx_base64 = acme_certificate.tickets.certificate_p12
+
+  # Senha do PFX
+  frontend_certificate_pfx_password = var.certificate_pfx_password
+
+  # Hostname usado no binding HTTPS do IIS
+  frontend_certificate_hostname = local.certificate_iis_hostname
+
+  # Endpoint usado para teste HTTPS
+  frontend_https_healthcheck_path = "/"
 }
 
 # Permite acesso RDP às VMs frontend e backend em Central US

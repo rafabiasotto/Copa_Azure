@@ -280,3 +280,82 @@ variable "data_expected_teams_count" {
   description = "Quantidade esperada de registros na tabela teams após a importação do BACPAC"
   type        = number
 }
+
+# URL do servidor ACME usado para emissão do certificado Let's Encrypt
+variable "acme_server_url" {
+  description = "URL do servidor ACME utilizado para emissão do certificado"
+  type        = string
+}
+
+# E-mail usado no registro da conta ACME do Let's Encrypt
+variable "acme_email" {
+  description = "E-mail usado no registro da conta ACME do Let's Encrypt"
+  type        = string
+}
+
+# Método de autenticação usado pelo ACME/Lego para gerenciar o desafio DNS no Azure DNS
+variable "acme_azure_auth_method" {
+  description = "Método de autenticação usado pelo ACME para criar o TXT no Azure DNS"
+  type        = string
+}
+
+# Tempo máximo de propagação DNS aguardado pelo desafio ACME
+variable "acme_dns_propagation_timeout" {
+  description = "Tempo máximo em segundos para aguardar propagação DNS do TXT _acme-challenge"
+  type        = number
+}
+
+# Intervalo de checagem da propagação DNS durante o desafio ACME
+variable "acme_dns_polling_interval" {
+  description = "Intervalo em segundos entre as checagens de propagação DNS"
+  type        = number
+}
+
+# TTL do registro TXT temporário criado pelo desafio ACME
+variable "acme_dns_ttl" {
+  description = "TTL em segundos do registro TXT temporário criado pelo desafio ACME"
+  type        = number
+}
+
+# Nome do Key Vault criado no Resource Group atual
+variable "key_vault_name" {
+  description = "Nome globalmente único do Key Vault que armazenará o certificado"
+  type        = string
+}
+
+# SKU do Key Vault
+variable "key_vault_sku_name" {
+  description = "SKU do Key Vault utilizado para armazenar o certificado"
+  type        = string
+}
+
+# Retenção de soft delete do Key Vault
+variable "key_vault_soft_delete_retention_days" {
+  description = "Quantidade de dias de retenção do soft delete do Key Vault"
+  type        = number
+}
+
+# Nome do certificado dentro do Key Vault
+variable "key_vault_certificate_name" {
+  description = "Nome do certificado importado no Key Vault"
+  type        = string
+}
+
+# Senha do PFX gerado pelo ACME e importado no Key Vault/IIS
+variable "certificate_pfx_password" {
+  description = "Senha utilizada para proteger o certificado PFX"
+  type        = string
+  sensitive   = true
+}
+
+# Quantidade mínima de dias restantes antes de o provider ACME tentar renovar em novo apply
+variable "certificate_min_days_remaining" {
+  description = "Quantidade mínima de dias restantes antes de o provider ACME tentar renovar o certificado"
+  type        = number
+}
+
+# Nome do registro usado como hostname HTTPS no IIS
+variable "certificate_iis_record_name" {
+  description = "Nome do registro DNS usado como hostname HTTPS no IIS"
+  type        = string
+}
