@@ -30,41 +30,8 @@ O certificado HTTPS é emitido automaticamente pelo Let's Encrypt utilizando o d
 
 ## Arquitetura
 
-```mermaid
-flowchart TD
-    USER[Usuário]
+<img width="1162" height="1584" alt="Arquitetura Fase de Grupos" src="https://github.com/user-attachments/assets/8d368be8-0893-40d5-b8fc-2f6f6ece9be0" />
 
-    DNS[Azure DNS<br/>rafacloud.shop]
-    ACME[Let's Encrypt<br/>DNS-01]
-    KV[Azure Key Vault<br/>Certificado PFX]
-
-    subgraph CUS[Azure - Central US]
-        PIP_FRONT[Public IP Frontend]
-
-        subgraph VNET_CUS[VNet 10.20.0.0/16]
-            FRONT[VM Frontend<br/>Windows Server 2025<br/>IIS + ARR + HTTPS]
-            BACK[VM Backend<br/>Windows Server 2025<br/>Node.js + IISNode]
-        end
-    end
-
-    subgraph CIN[Azure - Central India]
-        subgraph VNET_CIN[VNet 10.30.0.0/16]
-            DATA[VM Data<br/>SQL Server 2022]
-        end
-    end
-
-    USER --> DNS
-    DNS --> PIP_FRONT
-    PIP_FRONT --> FRONT
-    FRONT --> BACK
-    BACK --> DATA
-
-    VNET_CUS <-->|VNet Peering| VNET_CIN
-
-    ACME -->|Validação TXT| DNS
-    ACME -->|Emissão do certificado| KV
-    KV -->|PFX utilizado na configuração| FRONT
-```
 
 ---
 
