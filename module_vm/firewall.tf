@@ -16,26 +16,18 @@ locals {
       database_username_b64 = base64encode(var.sql_admin_username)
       database_password_b64 = base64encode(var.sql_admin_password)
 
-      # Quantidades esperadas para validação pós-importação
+      # Quantidades esperadas para validação após a importação
       expected_matches_count  = var.data_expected_matches_count
       expected_stadiums_count = var.data_expected_stadiums_count
       expected_teams_count    = var.data_expected_teams_count
     }
   )
 
-  # Converte o script completo da VM Data para Base64
-  configure_data_cin_script_base64 = base64encode(
-    local.configure_data_cin_script
-  )
-
-  # Reconstrói e executa o script de configuração dentro da VM Data
-  configure_data_cin_command = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"$scriptPath = 'C:\\Windows\\Temp\\configure-data.ps1'; $content = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${local.configure_data_cin_script_base64}')); Set-Content -Path $scriptPath -Value $content -Encoding UTF8 -Force; & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $scriptPath; exit $LASTEXITCODE\""
-
-  # Gera o script completo de configuração da VM backend
+  # Gera o script completo de configuração da VM Backend
   configure_bend_cus_script = templatefile(
     "${path.module}/scripts/configure-backend.ps1.tftpl",
     {
-      # URLs dos arquivos necessários para a VM backend
+      # URLs dos arquivos necessários para configurar o backend
       backend_zip_url_b64     = base64encode(var.backend_zip_url)
       iisnode_msi_url_b64     = base64encode(var.iisnode_msi_url)
       url_rewrite_msi_url_b64 = base64encode(var.url_rewrite_msi_url)
@@ -45,7 +37,7 @@ locals {
       backend_app_pool_name_b64 = base64encode(var.backend_app_pool_name)
       backend_app_path_b64      = base64encode(var.backend_app_path)
 
-      # IP privado dinâmico da VM Data
+      # IP privado atribuído dinamicamente à VM Data
       database_private_ip_b64 = base64encode(
         azurerm_network_interface.nic_data_cin.private_ip_address
       )
@@ -68,19 +60,11 @@ locals {
     }
   )
 
-  # Converte o script completo da VM backend para Base64
-  configure_bend_cus_script_base64 = base64encode(
-    local.configure_bend_cus_script
-  )
-
-  # Reconstrói e executa o script de configuração dentro da VM backend
-  configure_bend_cus_command = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"$scriptPath = 'C:\\Windows\\Temp\\configure-backend.ps1'; $content = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${local.configure_bend_cus_script_base64}')); Set-Content -Path $scriptPath -Value $content -Encoding UTF8 -Force; & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $scriptPath; exit $LASTEXITCODE\""
-
-  # Gera o script completo de configuração da VM frontend
+  # Gera o script completo de configuração da VM Frontend
   configure_fend_cus_script = templatefile(
     "${path.module}/scripts/configure-frontend.ps1.tftpl",
     {
-      # URLs dos arquivos necessários para a VM frontend
+      # URLs dos arquivos necessários para configurar o frontend
       frontend_zip_url_b64    = base64encode(var.frontend_zip_url)
       url_rewrite_msi_url_b64 = base64encode(var.url_rewrite_msi_url)
 
@@ -95,17 +79,17 @@ locals {
       frontend_app_pool_name_b64 = base64encode(var.frontend_app_pool_name)
       frontend_app_path_b64      = base64encode(var.frontend_app_path)
 
-      # IP privado dinâmico da VM backend
+      # IP privado atribuído dinamicamente à VM Backend
       backend_private_ip_b64 = base64encode(
         azurerm_network_interface.nic_bend_cus.private_ip_address
       )
 
-      # Placeholder do web.config que receberá o endereço do backend
+      # Placeholder que será substituído no web.config
       backend_placeholder_b64 = base64encode(
         var.frontend_backend_placeholder
       )
 
-      # Endpoints utilizados nos testes HTTP
+      # Endpoints usados nos testes HTTP
       frontend_healthcheck_path_b64 = base64encode(
         var.frontend_healthcheck_path
       )
@@ -115,83 +99,114 @@ locals {
       )
 
       # Configurações HTTPS do frontend
-      frontend_https_enabled       = var.frontend_https_enabled
-      certificate_pfx_base64_b64   = base64encode(var.frontend_certificate_pfx_base64)
-      certificate_pfx_password_b64 = base64encode(var.frontend_certificate_pfx_password)
-      certificate_hostname_b64     = base64encode(var.frontend_certificate_hostname)
-      https_healthcheck_path_b64   = base64encode(var.frontend_https_healthcheck_path)
+      frontend_https_enabled = var.frontend_https_enabled
 
-      # Portas utilizadas pelo frontend e backend
+      certificate_pfx_base64_b64 = base64encode(
+        var.frontend_certificate_pfx_base64
+      )
+
+      certificate_pfx_password_b64 = base64encode(
+        var.frontend_certificate_pfx_password
+      )
+
+      certificate_hostname_b64 = base64encode(
+        var.frontend_certificate_hostname
+      )
+
+      https_healthcheck_path_b64 = base64encode(
+        var.frontend_https_healthcheck_path
+      )
+
+      # Portas utilizadas pelo frontend e pelo backend
       frontend_port = var.frontend_port
       backend_port  = var.backend_port
     }
   )
-
-  # Converte o script completo da VM frontend para Base64
-  configure_fend_cus_script_base64 = base64encode(
-    local.configure_fend_cus_script
-  )
-
-  # Reconstrói e executa o script de configuração dentro da VM frontend
-  configure_fend_cus_command = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"$scriptPath = 'C:\\Windows\\Temp\\configure-frontend.ps1'; $content = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${local.configure_fend_cus_script_base64}')); Set-Content -Path $scriptPath -Value $content -Encoding UTF8 -Force; & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $scriptPath; exit $LASTEXITCODE\""
 }
 
-# Configura a VM Data com validação do SQL Server, download do BACPAC e importação do banco
-resource "azurerm_virtual_machine_extension" "configure_data_cin" {
-  name                       = "configure-windows-data"
-  virtual_machine_id         = azurerm_windows_virtual_machine.vm_data_cin.id
-  publisher                  = "Microsoft.Compute"
-  type                       = "CustomScriptExtension"
-  type_handler_version       = "1.10"
-  auto_upgrade_minor_version = true
+# Executa o script completo de configuração da VM Data
+resource "azurerm_virtual_machine_run_command" "configure_data_cin" {
+  # Nome do Run Command criado dentro da VM Data
+  name = "configure-windows-data"
 
-  # Usa protected_settings porque o script contém usuário e senha SQL
-  protected_settings = jsonencode({
-    commandToExecute = local.configure_data_cin_command
-  })
+  # Região da VM Data
+  location = azurerm_windows_virtual_machine.vm_data_cin.location
 
-  # Aguarda a configuração do SQL Virtual Machine antes da importação do BACPAC
+  # VM que receberá o comando
+  virtual_machine_id = azurerm_windows_virtual_machine.vm_data_cin.id
+
+  # Envia o PowerShell como conteúdo de script, sem colocá-lo na linha de comando
+  source {
+    script = local.configure_data_cin_script
+  }
+
+  # Aguarda a configuração da extensão de gerenciamento do SQL Server
   depends_on = [
     azurerm_mssql_virtual_machine.sql_vm_data_cin
   ]
+
+  # Permite que instalação, download e importação do BACPAC levem até 90 minutos
+  timeouts {
+    create = "90m"
+    update = "90m"
+    delete = "30m"
+  }
 }
 
-# Configura completamente a VM backend com IIS, Node.js, iisnode, aplicação e arquivo .env
-resource "azurerm_virtual_machine_extension" "configure_bend_cus" {
-  name                       = "configure-windows-bend"
-  virtual_machine_id         = azurerm_windows_virtual_machine.vm_bend_cus.id
-  publisher                  = "Microsoft.Compute"
-  type                       = "CustomScriptExtension"
-  type_handler_version       = "1.10"
-  auto_upgrade_minor_version = true
+# Executa o script completo de configuração da VM Backend
+resource "azurerm_virtual_machine_run_command" "configure_bend_cus" {
+  # Nome do Run Command criado dentro da VM Backend
+  name = "configure-windows-bend"
 
-  # Usa protected_settings porque o script contém senha SQL e segredo JWT
-  protected_settings = jsonencode({
-    commandToExecute = local.configure_bend_cus_command
-  })
+  # Região da VM Backend
+  location = azurerm_windows_virtual_machine.vm_bend_cus.location
 
-  # Aguarda a VM Data importar e validar o banco
+  # VM que receberá o comando
+  virtual_machine_id = azurerm_windows_virtual_machine.vm_bend_cus.id
+
+  # Envia o PowerShell como conteúdo de script, sem colocá-lo na linha de comando
+  source {
+    script = local.configure_bend_cus_script
+  }
+
+  # O backend só será configurado depois que o banco estiver importado e validado
   depends_on = [
-    azurerm_virtual_machine_extension.configure_data_cin
+    azurerm_virtual_machine_run_command.configure_data_cin
   ]
+
+  # Permite tempo suficiente para instalar IIS, Node.js e os demais componentes
+  timeouts {
+    create = "90m"
+    update = "90m"
+    delete = "30m"
+  }
 }
 
-# Configura completamente a VM frontend com IIS, URL Rewrite, ARR, aplicação web e HTTPS
-resource "azurerm_virtual_machine_extension" "configure_fend_cus" {
-  name                       = "configure-windows-fend"
-  virtual_machine_id         = azurerm_windows_virtual_machine.vm_fend_cus.id
-  publisher                  = "Microsoft.Compute"
-  type                       = "CustomScriptExtension"
-  type_handler_version       = "1.10"
-  auto_upgrade_minor_version = true
+# Executa o script completo de configuração da VM Frontend
+resource "azurerm_virtual_machine_run_command" "configure_fend_cus" {
+  # Nome do Run Command criado dentro da VM Frontend
+  name = "configure-windows-fend"
 
-  # Usa protected_settings porque o script contém certificado PFX e senha do PFX
-  protected_settings = jsonencode({
-    commandToExecute = local.configure_fend_cus_command
-  })
+  # Região da VM Frontend
+  location = azurerm_windows_virtual_machine.vm_fend_cus.location
 
-  # Aguarda a configuração da VM backend antes de configurar o proxy e o HTTPS
+  # VM que receberá o comando
+  virtual_machine_id = azurerm_windows_virtual_machine.vm_fend_cus.id
+
+  # Envia o PowerShell como conteúdo de script, sem colocá-lo na linha de comando
+  source {
+    script = local.configure_fend_cus_script
+  }
+
+  # O frontend só será configurado depois que o backend estiver funcionando
   depends_on = [
-    azurerm_virtual_machine_extension.configure_bend_cus
+    azurerm_virtual_machine_run_command.configure_bend_cus
   ]
+
+  # Permite tempo suficiente para instalar IIS, ARR e configurar o certificado
+  timeouts {
+    create = "90m"
+    update = "90m"
+    delete = "30m"
+  }
 }

@@ -157,3 +157,33 @@ module "module_dns" {
   dns_zone_name      = var.dns_zone_name
   frontend_public_ip = module.module_vm.vm_public_ip_fend_cus
 }
+
+# Módulo responsável pela emissão e armazenamento do certificado HTTPS
+module "module_certificate" {
+  source = "./module_certificate"
+
+  # Resource Group atual do projeto
+  resource_group_name = azurerm_resource_group.rg_cus.name
+  location            = azurerm_resource_group.rg_cus.location
+
+  # Zona pública criada pelo módulo de DNS
+  dns_zone_name = module.module_dns.dns_zone_name
+
+  # Configurações da conta ACME e do desafio DNS-01
+  acme_email                     = var.acme_email
+  acme_azure_auth_method         = var.acme_azure_auth_method
+  acme_dns_propagation_timeout   = var.acme_dns_propagation_timeout
+  acme_dns_polling_interval      = var.acme_dns_polling_interval
+  acme_dns_ttl                   = var.acme_dns_ttl
+  certificate_min_days_remaining = var.certificate_min_days_remaining
+
+  # Configurações do Azure Key Vault
+  key_vault_name                       = var.key_vault_name
+  key_vault_sku_name                   = var.key_vault_sku_name
+  key_vault_soft_delete_retention_days = var.key_vault_soft_delete_retention_days
+  key_vault_certificate_name           = var.key_vault_certificate_name
+
+  # Configurações do certificado e do hostname
+  certificate_pfx_password    = var.certificate_pfx_password
+  certificate_iis_record_name = var.certificate_iis_record_name
+}
