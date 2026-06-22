@@ -20,6 +20,12 @@ override.tf.json
 *_override.tf
 *_override.tf.json
 
+# Certificados e chaves privadas
+*.pfx
+*.p12
+*.pem
+*.key
+
 # VS Code
 .vscode/
 

@@ -22,7 +22,7 @@ New-Item -Path $toolDirectory -ItemType Directory -Force | Out-Null
 Start-Transcript -Path $logFile -Append
 
 try {
-    # Carrega classes .NET para conexão SQL
+    # Carrega as classes .NET utilizadas para conexão com o SQL Server
     Add-Type -AssemblyName System.Data
 
     # Converte um valor recebido em Base64 pelo template Terraform
@@ -69,7 +69,7 @@ try {
             -OutFile $Destination `
             -UseBasicParsing `
             -Headers @{
-                "User-Agent" = "Terraform-CustomScriptExtension"
+                "User-Agent" = "Terraform-Azure-RunCommand"
             }
 
         if (-not (Test-Path $Destination)) {
@@ -79,6 +79,28 @@ try {
         if ((Get-Item $Destination).Length -eq 0) {
             throw "O arquivo baixado esta vazio: $Destination"
         }
+    }
+
+    # Cria uma connection string válida para o SQL Server
+    function New-SqlConnectionString {
+        param(
+            [Parameter(Mandatory)]
+            [string]$Database,
+
+            [int]$ConnectionTimeout = 30
+        )
+
+        $builder = [System.Data.SqlClient.SqlConnectionStringBuilder]::new()
+
+        # Palavras-chave reconhecidas pelo System.Data.SqlClient
+        $builder["Data Source"]     = "tcp:localhost,$databasePort"
+        $builder["Initial Catalog"] = $Database
+        $builder["User ID"]         = $databaseUsername
+        $builder["Password"]        = $databasePassword
+        $builder["Encrypt"]         = $false
+        $builder["Connect Timeout"] = $ConnectionTimeout
+
+        return $builder.ConnectionString
     }
 
     # Executa uma consulta SQL escalar e retorna o primeiro valor
@@ -91,17 +113,12 @@ try {
             [string]$Query
         )
 
-        $connectionStringBuilder = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-        $connectionStringBuilder.DataSource = "tcp:localhost,$databasePort"
-        $connectionStringBuilder.InitialCatalog = $Database
-        $connectionStringBuilder.UserID = $databaseUsername
-        $connectionStringBuilder.Password = $databasePassword
-        $connectionStringBuilder.Encrypt = $false
-        $connectionStringBuilder.TrustServerCertificate = $true
-        $connectionStringBuilder.ConnectTimeout = 30
+        $connectionString = New-SqlConnectionString `
+            -Database $Database `
+            -ConnectionTimeout 30
 
-        $connection = New-Object System.Data.SqlClient.SqlConnection(
-            $connectionStringBuilder.ConnectionString
+        $connection = [System.Data.SqlClient.SqlConnection]::new(
+            $connectionString
         )
 
         $command = $connection.CreateCommand()
@@ -113,8 +130,17 @@ try {
             return $command.ExecuteScalar()
         }
         finally {
-            $connection.Close()
-            $connection.Dispose()
+            if ($null -ne $command) {
+                $command.Dispose()
+            }
+
+            if ($null -ne $connection) {
+                if ($connection.State -ne [System.Data.ConnectionState]::Closed) {
+                    $connection.Close()
+                }
+
+                $connection.Dispose()
+            }
         }
     }
 
@@ -168,7 +194,7 @@ try {
         return $null
     }
 
-    # Obtém o SqlPackage existente ou baixa a versão standalone informada no terraform.tfvars
+    # Obtém o SqlPackage existente ou baixa a versão standalone
     function Get-SqlPackagePath {
         $existingSqlPackagePath = Get-ExistingSqlPackagePath
 
@@ -231,7 +257,7 @@ try {
     $expectedStadiumsCount = ${expected_stadiums_count}
     $expectedTeamsCount    = ${expected_teams_count}
 
-    # Porta SQL configurada na SQL Virtual Machine
+    # Porta configurada na SQL Virtual Machine
     $databasePort = 1433
 
     Write-Step "Desabilitando Windows Firewall"
@@ -273,15 +299,27 @@ try {
 
     Write-Step "Validando servico SQL Server"
 
-    # Aguarda o serviço padrão do SQL Server ficar disponível
+    # Localiza o serviço da instância padrão do SQL Server
     $sqlService = Get-Service `
         -Name "MSSQLSERVER" `
         -ErrorAction Stop
 
+    # Inicia o serviço caso ainda não esteja em execução
     if ($sqlService.Status -ne "Running") {
         Start-Service -Name "MSSQLSERVER"
+
+        $sqlService.WaitForStatus(
+            [System.ServiceProcess.ServiceControllerStatus]::Running,
+            [TimeSpan]::FromMinutes(5)
+        )
     }
 
+    # Valida a construção da connection string antes do loop
+    $null = New-SqlConnectionString `
+        -Database "master" `
+        -ConnectionTimeout 30
+
+    # Aguarda o SQL Server aceitar conexões
     $sqlReady = $false
 
     for ($attempt = 1; $attempt -le 30; $attempt++) {
@@ -292,12 +330,17 @@ try {
 
             if ([int]$testResult -eq 1) {
                 $sqlReady = $true
+
+                Write-Host "SQL Server respondeu corretamente na tentativa $attempt." -ForegroundColor Green
                 break
             }
         }
         catch {
             Write-Warning "Tentativa $attempt de 30 aguardando SQL Server: $($_.Exception.Message)"
-            Start-Sleep -Seconds 10
+
+            if ($attempt -lt 30) {
+                Start-Sleep -Seconds 10
+            }
         }
     }
 
@@ -342,7 +385,7 @@ try {
     else {
         Write-Step "Importando BACPAC para o banco $databaseName"
 
-        # Argumentos do SqlPackage para importar o BACPAC no SQL Server local
+        # Argumentos utilizados pelo SqlPackage
         $sqlPackageArguments = @(
             "/Action:Import",
             "/SourceFile:$bacpacPath",
@@ -350,8 +393,7 @@ try {
             "/TargetDatabaseName:$databaseName",
             "/TargetUser:$databaseUsername",
             "/TargetPassword:$databasePassword",
-            "/TargetEncryptConnection:False",
-            "/TargetTrustServerCertificate:True"
+            "/TargetEncryptConnection:False"
         )
 
         & $sqlPackagePath @sqlPackageArguments
@@ -405,7 +447,7 @@ try {
     Write-Host "Log: $logFile" -ForegroundColor Green
 }
 catch {
-    # Registra e devolve o erro para a Custom Script Extension
+    # Registra o erro e devolve falha ao Azure Run Command
     Write-Error "Falha na configuracao da VM Data: $($_.Exception.Message)"
     throw
 }

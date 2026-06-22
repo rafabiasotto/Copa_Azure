@@ -142,12 +142,6 @@ variable "frontend_zip_url" {
   type        = string
 }
 
-# URL do instalador MSI x64 do IIS External Cache
-variable "external_cache_msi_url" {
-  description = "URL do instalador MSI x64 do IIS External Cache utilizado pelo ARR"
-  type        = string
-}
-
 # URL do instalador MSI x64 do Application Request Routing
 variable "arr_msi_url" {
   description = "URL do instalador MSI x64 do Application Request Routing"

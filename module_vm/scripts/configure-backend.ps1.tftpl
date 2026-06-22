@@ -30,11 +30,19 @@ try {
             [string]$Value
         )
 
-        $escapedValue = $Value `
-            .Replace('\', '\\') `
-            .Replace('"', '\"') `
-            .Replace("`r", '\r') `
-            .Replace("`n", '\n')
+        if ($null -eq $Value) {
+            $escapedValue = ""
+        }
+        else {
+            $escapedValue = $Value
+        }
+
+        # As substituições são executadas separadamente para manter
+        # compatibilidade com o Windows PowerShell 5.1.
+        $escapedValue = $escapedValue.Replace('\', '\\')
+        $escapedValue = $escapedValue.Replace('"', '\"')
+        $escapedValue = $escapedValue.Replace("`r", '\r')
+        $escapedValue = $escapedValue.Replace("`n", '\n')
 
         return '"' + $escapedValue + '"'
     }

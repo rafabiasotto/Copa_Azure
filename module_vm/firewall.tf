@@ -67,11 +67,6 @@ locals {
       # URLs dos arquivos necessários para configurar o frontend
       frontend_zip_url_b64    = base64encode(var.frontend_zip_url)
       url_rewrite_msi_url_b64 = base64encode(var.url_rewrite_msi_url)
-
-      external_cache_msi_url_b64 = base64encode(
-        var.external_cache_msi_url
-      )
-
       arr_msi_url_b64 = base64encode(var.arr_msi_url)
 
       # Configurações do site e Application Pool do frontend

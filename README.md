@@ -1,394 +1,106 @@
 # Copa Azure 2026 — Plataforma de Venda de Ingressos
 
-Projeto prático de infraestrutura como código desenvolvido durante a **Fase de Grupos da Copa Azure**, simulando uma plataforma de venda de ingressos para a Copa do Mundo de 2026.
+Projeto de infraestrutura como código desenvolvido com Terraform para provisionar uma plataforma de venda de ingressos da Copa do Mundo de 2026 no Microsoft Azure.
 
-Toda a infraestrutura é provisionada na Microsoft Azure utilizando Terraform. Além da criação dos recursos, o projeto também automatiza a configuração interna das máquinas virtuais, o deploy das aplicações, a importação do banco de dados e a configuração do certificado HTTPS.
+A solução cria uma arquitetura distribuída em duas regiões, composta por máquinas virtuais Windows para frontend, backend e banco de dados, redes virtuais com peering, Azure DNS, certificado HTTPS emitido pelo Let's Encrypt e armazenamento do certificado no Azure Key Vault.
 
-O objetivo principal foi reduzir ao máximo as configurações manuais e deixar o ambiente pronto para uso após a execução do Terraform.
+## Status
+
+Infraestrutura provisionada e aplicação validada de ponta a ponta, incluindo acesso HTTPS, cadastro de usuário e compra de ingresso.
 
 ---
 
-## Arquitetura
+## Visão geral
 
-A aplicação foi dividida em três camadas:
+A infraestrutura possui três camadas principais:
 
-```mermaid
-flowchart LR
-    User[Usuário] --> DNS[Azure DNS]
+* **Frontend:** aplicação web publicada no IIS.
+* **Backend:** API Node.js executada por meio do IIS e iisnode.
+* **Data:** SQL Server 2022 com o banco restaurado automaticamente por um arquivo BACPAC.
 
-    DNS --> Frontend[VM Frontend<br/>IIS + ARR + HTTPS]
-    Frontend --> Backend[VM Backend<br/>IIS + Node.js + iisnode]
-    Backend --> Database[VM Data<br/>SQL Server 2022]
-
-    ACME[Let's Encrypt] --> DNS
-    ACME --> Certificate[Certificado PFX]
-    Certificate --> KeyVault[Azure Key Vault]
-    Certificate --> Frontend
-
-    Frontend -. Central US .- Backend
-    Backend -. VNet Peering .- Database
-    Database -. Central India .- Backend
-```
-
-O acesso externo acontece pelo endereço:
+O acesso externo à aplicação é realizado pelo endereço:
 
 ```text
 https://tickets.rafacloud.shop
 ```
 
-O frontend recebe as requisições HTTPS e utiliza o Application Request Routing do IIS como proxy reverso para encaminhar as chamadas da API ao backend pela rede privada.
+O certificado HTTPS é emitido automaticamente pelo Let's Encrypt utilizando o desafio DNS-01 no Azure DNS.
 
-O backend, por sua vez, acessa o SQL Server utilizando o endereço IP privado da VM Data.
+---
+
+## Arquitetura
+
+```mermaid
+flowchart TD
+    USER[Usuário]
+
+    DNS[Azure DNS<br/>rafacloud.shop]
+    ACME[Let's Encrypt<br/>DNS-01]
+    KV[Azure Key Vault<br/>Certificado PFX]
+
+    subgraph CUS[Azure - Central US]
+        PIP_FRONT[Public IP Frontend]
+
+        subgraph VNET_CUS[VNet 10.20.0.0/16]
+            FRONT[VM Frontend<br/>Windows Server 2025<br/>IIS + ARR + HTTPS]
+            BACK[VM Backend<br/>Windows Server 2025<br/>Node.js + IISNode]
+        end
+    end
+
+    subgraph CIN[Azure - Central India]
+        subgraph VNET_CIN[VNet 10.30.0.0/16]
+            DATA[VM Data<br/>SQL Server 2022]
+        end
+    end
+
+    USER --> DNS
+    DNS --> PIP_FRONT
+    PIP_FRONT --> FRONT
+    FRONT --> BACK
+    BACK --> DATA
+
+    VNET_CUS <-->|VNet Peering| VNET_CIN
+
+    ACME -->|Validação TXT| DNS
+    ACME -->|Emissão do certificado| KV
+    KV -->|PFX utilizado na configuração| FRONT
+```
 
 ---
 
 ## Tecnologias utilizadas
 
-* Microsoft Azure
 * Terraform
-* AzureRM Provider
-* TLS Provider
-* ACME Provider
+* Microsoft Azure
 * Azure Virtual Machines
 * Azure Virtual Network
-* VNet Peering
-* Network Security Groups
+* Azure Network Security Group
 * Azure DNS
 * Azure Key Vault
-* Windows Server 2025
-* Windows Server 2022
+* Let's Encrypt
+* ACME
+* Windows Server
+* IIS
+* Application Request Routing
+* IIS URL Rewrite
+* IISNode
+* Node.js
 * SQL Server 2022
-* IIS
-* Application Request Routing
-* URL Rewrite
-* Node.js
-* iisnode
 * PowerShell
-* Let’s Encrypt
 
 ---
 
-## Recursos provisionados
-
-### Resource Group
-
-Todos os recursos são criados no mesmo Resource Group:
-
-```text
-rg-prd-tik-cus-001
-```
-
-### Rede em Central US
-
-| Recurso                | Nome                        | Endereçamento      |
-| ---------------------- | --------------------------- | ------------------ |
-| Virtual Network        | `vnet-prd-inf-cus-001`      | `10.20.0.0/16`     |
-| Subnet Frontend        | `snet-prd-inf-fend-cus-001` | `10.20.1.0/24`     |
-| Subnet Backend         | `snet-prd-inf-bend-cus-001` | `10.20.2.0/24`     |
-| Network Security Group | `nsg-prd-inf-cus-001`       | Frontend e Backend |
-
-### Rede em Central India
-
-| Recurso                | Nome                        | Endereçamento  |
-| ---------------------- | --------------------------- | -------------- |
-| Virtual Network        | `vnet-prd-inf-cin-001`      | `10.30.0.0/16` |
-| Subnet Data            | `snet-prd-inf-data-cin-001` | `10.30.1.0/24` |
-| Network Security Group | `nsg-prd-inf-cin-001`       | Banco de dados |
-
-As duas redes são conectadas por meio de VNet Peering bidirecional.
-
----
-
-## Máquinas virtuais
-
-### Frontend
-
-```text
-vm-prd-tk-fend-cus-001
-```
-
-Responsável por disponibilizar a interface da aplicação para os usuários.
-
-Principais configurações:
-
-* Windows Server 2025 Azure Edition
-* IIS
-* URL Rewrite
-* Application Request Routing
-* External Cache
-* Proxy reverso para o backend
-* Certificado HTTPS
-* Binding para `tickets.rafacloud.shop`
-* Deploy automático do frontend
-
-### Backend
-
-```text
-vm-prd-tk-bend-cus-001
-```
-
-Responsável pela execução da API da aplicação.
-
-Principais configurações:
-
-* Windows Server 2025 Azure Edition
-* IIS
-* Node.js
-* iisnode
-* URL Rewrite
-* Deploy automático da API
-* Criação automática do arquivo `.env`
-* Comunicação com o SQL Server pelo IP privado
-* Endpoint de health check
-
-### Data
-
-```text
-vm-prd-tk-data-cin-001
-```
-
-Responsável pelo armazenamento dos dados da aplicação.
-
-Principais configurações:
-
-* Windows Server 2022
-* SQL Server 2022 Developer
-* SQL Virtual Machine registrada no Azure
-* Autenticação SQL
-* Conectividade privada na porta 1433
-* Importação automática do arquivo BACPAC
-* Validação automática do conteúdo importado
-
-Também são anexados três discos gerenciados adicionais à VM Data.
-
-Os scripts de configuração não alteram os LUNs, o cache ou a formatação desses discos.
-
----
-
-## Banco de dados
-
-O banco utilizado pela aplicação é:
-
-```text
-FIFA2026Tickets
-```
-
-Durante a execução do Terraform, o script da VM Data:
-
-1. Aguarda o serviço do SQL Server ficar disponível.
-2. Testa a autenticação SQL.
-3. Baixa o arquivo BACPAC.
-4. Localiza ou instala o `SqlPackage`.
-5. Verifica se o banco já existe.
-6. Importa o BACPAC quando necessário.
-7. Executa consultas de validação.
-
-Após a importação, são esperados:
-
-| Informação | Quantidade |
-| ---------- | ---------: |
-| Partidas   |        104 |
-| Estádios   |         17 |
-| Seleções   |         49 |
-
----
-
-## Configuração automática das aplicações
-
-Os scripts PowerShell são renderizados pelo Terraform utilizando `templatefile`.
-
-A execução acontece por meio do recurso:
-
-```hcl
-azurerm_virtual_machine_run_command
-```
-
-Essa abordagem permite enviar scripts maiores diretamente para as VMs, sem depender de uma linha de comando extensa.
-
-A ordem de execução é controlada pelo Terraform:
-
-```text
-VM Data
-   ↓
-Importação e validação do banco
-   ↓
-VM Backend
-   ↓
-Instalação e publicação da API
-   ↓
-VM Frontend
-   ↓
-Publicação do site e configuração HTTPS
-```
-
-O backend somente é configurado após a conclusão da VM Data.
-
-O frontend somente é configurado após a conclusão do backend.
-
----
-
-## DNS e domínio personalizado
-
-O projeto utiliza uma zona pública do Azure DNS:
-
-```text
-rafacloud.shop
-```
-
-Também é criado um registro A:
-
-```text
-tickets.rafacloud.shop
-```
-
-O registro aponta para o IP público estático da VM Frontend.
-
-### Por que a zona DNS precisa ser criada primeiro?
-
-A zona DNS precisa ser criada em uma etapa separada antes do restante da infraestrutura.
-
-Isso acontece porque os nameservers autoritativos do Azure somente são disponibilizados depois que a zona DNS é criada.
-
-A primeira execução é feita com:
-
-```powershell
-terraform apply -target="module.module_dns.azurerm_dns_zone.dns_zone"
-```
-
-Depois da criação, os nameservers podem ser consultados com:
-
-```powershell
-terraform output dns_name_servers
-```
-
-Exemplo:
-
-```text
-ns1-01.azure-dns.com
-ns2-01.azure-dns.net
-ns3-01.azure-dns.org
-ns4-01.azure-dns.info
-```
-
-Esses nameservers precisam ser configurados manualmente no registrador em que o domínio foi adquirido.
-
-Essa é a única etapa externa que não é executada diretamente pelo Terraform, pois o gerenciamento do domínio está fora da Azure.
-
-A delegação pode ser validada com:
-
-```powershell
-Resolve-DnsName rafacloud.shop -Type NS -Server 8.8.8.8
-```
-
-Somente após os nameservers públicos apontarem para o Azure DNS o restante do Terraform deve ser executado.
-
-Essa ordem é importante porque o Let’s Encrypt utiliza o desafio DNS-01 para validar o domínio.
-
-Durante a emissão do certificado, é criado temporariamente um registro TXT semelhante a:
-
-```text
-_acme-challenge.rafacloud.shop
-```
-
-O Let’s Encrypt consulta publicamente esse registro para confirmar que o domínio está sob controle da infraestrutura.
-
-Sem a delegação correta, o registro pode existir no Azure DNS, mas não será encontrado publicamente, fazendo a emissão do certificado falhar.
-
----
-
-## Certificado HTTPS
-
-O certificado é emitido automaticamente pelo Let’s Encrypt por meio do provider ACME.
-
-O certificado contempla:
-
-```text
-*.rafacloud.shop
-rafacloud.shop
-```
-
-O fluxo de emissão é:
-
-```text
-Terraform
-   ↓
-Criação da conta ACME
-   ↓
-Criação temporária do registro TXT
-   ↓
-Validação DNS-01
-   ↓
-Emissão do certificado
-   ↓
-Geração do arquivo PFX
-   ↓
-Importação no Azure Key Vault
-   ↓
-Instalação na VM Frontend
-   ↓
-Binding HTTPS no IIS
-```
-
-O certificado é armazenado no Key Vault:
-
-```text
-kv-tk-cert-001
-```
-
-Com o nome:
-
-```text
-cert-rafacloud-shop
-```
-
-O mesmo certificado é instalado no repositório de certificados da VM Frontend e associado ao site no IIS.
-
-O projeto não possui renovação automática do certificado.
-
----
-
-## Estrutura do projeto
-
-```text
-.
-├── certificate.tf
-├── certificate_outputs.tf
-├── main.tf
-├── outputs.tf
-├── providers.tf
-├── variables.tf
-├── terraform.tfvars
-│
-├── module_dns
-│   ├── ...
-│
-├── module_network
-│   ├── ...
-│
-└── module_vm
-    ├── firewall.tf
-    ├── variables.tf
-    ├── ...
-    │
-    └── scripts
-        ├── configure-data.ps1.tftpl
-        ├── configure-backend.ps1.tftpl
-        └── configure-frontend.ps1.tftpl
-```
-
-### Responsabilidade dos módulos
-
-| Módulo           | Responsabilidade                                      |
-| ---------------- | ----------------------------------------------------- |
-| `module_dns`     | Zona DNS e registro A                                 |
-| `module_network` | VNets, subnets, NSGs e peerings                       |
-| `module_vm`      | VMs, interfaces, IPs, discos e configurações internas |
-
----
-
-## Providers
+## Providers Terraform
 
 O projeto utiliza os seguintes providers:
+
+| Provider            | Finalidade                                           |
+| ------------------- | ---------------------------------------------------- |
+| `hashicorp/azurerm` | Provisionamento dos recursos no Azure                |
+| `hashicorp/tls`     | Geração da chave privada da conta ACME               |
+| `vancluever/acme`   | Registro ACME e emissão do certificado Let's Encrypt |
+
+Configuração principal:
 
 ```hcl
 terraform {
@@ -411,193 +123,786 @@ terraform {
     }
   }
 }
+
+provider "azurerm" {
+  features {}
+}
+
+provider "acme" {
+  server_url = var.acme_server_url
+}
+```
+
+A configuração dos providers permanece no módulo raiz. Os módulos filhos apenas declaram os providers que utilizam.
+
+---
+
+## Estrutura do projeto
+
+```text
+Copa_Azure/
+├── main.tf
+├── provider.tf
+├── variables.tf
+├── outputs.tf
+├── README.md
+│
+├── module_network/
+│   ├── main.tf
+│   ├── variables.tf
+│   └── outputs.tf
+│
+├── module_dns/
+│   ├── main.tf
+│   ├── variables.tf
+│   └── outputs.tf
+│
+├── module_certificate/
+│   ├── main.tf
+│   ├── variables.tf
+│   └── outputs.tf
+│
+└── module_vm/
+    ├── main.tf
+    ├── variables.tf
+    ├── outputs.tf
+    ├── firewall.tf
+    └── scripts/
+        ├── configure-data.ps1.tftpl
+        ├── configure-backend.ps1.tftpl
+        └── configure-frontend.ps1.tftpl
+```
+
+---
+
+## Organização dos módulos
+
+### `module_network`
+
+Responsável por criar toda a estrutura de rede.
+
+Recursos principais:
+
+* Network Security Group em Central US.
+* Network Security Group em Central India.
+* Virtual Network em Central US.
+* Virtual Network em Central India.
+* Subnet Frontend.
+* Subnet Backend.
+* Subnet Data.
+* Associação dos NSGs às subnets.
+* Peering bidirecional entre as VNets.
+
+### Rede Central US
+
+| Recurso         | Valor                  |
+| --------------- | ---------------------- |
+| VNet            | `vnet-prd-inf-cus-001` |
+| CIDR            | `10.20.0.0/16`         |
+| Subnet Frontend | `10.20.1.0/24`         |
+| Subnet Backend  | `10.20.2.0/24`         |
+| NSG             | `nsg-prd-inf-cus-001`  |
+
+### Rede Central India
+
+| Recurso     | Valor                  |
+| ----------- | ---------------------- |
+| VNet        | `vnet-prd-inf-cin-001` |
+| CIDR        | `10.30.0.0/16`         |
+| Subnet Data | `10.30.1.0/24`         |
+| NSG         | `nsg-prd-inf-cin-001`  |
+
+---
+
+### `module_dns`
+
+Responsável pela criação da zona DNS pública e do registro da aplicação.
+
+Recursos principais:
+
+* Zona DNS pública `rafacloud.shop`.
+* Registro A `tickets`.
+* Associação do registro ao IP público da VM Frontend.
+
+Outputs fornecidos pelo módulo:
+
+```hcl
+
+output "dns_zone_name" {
+  description = "Nome da zona pública criada no Azure DNS"
+  value       = azurerm_dns_zone.dns_zone.name
+}
+```
+
+O output `dns_zone_name` é utilizado pelo `module_certificate` para configurar o desafio DNS-01.
+
+---
+
+### `module_certificate`
+
+Responsável por emitir, armazenar e disponibilizar o certificado HTTPS da aplicação.
+
+Recursos principais:
+
+* Chave privada da conta ACME.
+* Registro da conta no Let's Encrypt.
+* Emissão do certificado wildcard.
+* Validação DNS-01 no Azure DNS.
+* Azure Key Vault.
+* Access Policy do Key Vault.
+* Importação do certificado PFX no Key Vault.
+
+Recursos criados pelo módulo:
+
+```text
+module.module_certificate.tls_private_key.acme_account_key
+module.module_certificate.acme_registration.letsencrypt
+module.module_certificate.acme_certificate.tickets
+module.module_certificate.azurerm_key_vault.certificates
+module.module_certificate.azurerm_key_vault_access_policy.terraform_current
+module.module_certificate.azurerm_key_vault_certificate.tickets
+```
+
+#### Certificado emitido
+
+O certificado possui:
+
+```text
+Common Name: *.rafacloud.shop
+Subject Alternative Name: rafacloud.shop
+```
+
+O wildcard permite utilizar o certificado em subdomínios como:
+
+```text
+tickets.rafacloud.shop
+```
+
+#### Validação DNS-01
+
+O provider ACME cria temporariamente um registro TXT semelhante a:
+
+```text
+_acme-challenge.rafacloud.shop
+```
+
+O Let's Encrypt consulta esse registro para confirmar que a zona DNS está sob controle da infraestrutura.
+
+#### Azure Key Vault
+
+O certificado é importado automaticamente para:
+
+```text
+Key Vault: kv-tk-cert-001
+Certificado: cert-rafacloud-shop
+```
+
+O Key Vault utiliza Access Policies:
+
+```hcl
+rbac_authorization_enabled = false
+```
+
+A identidade que executa o Terraform recebe permissões para criar, importar, consultar, atualizar, recuperar e excluir certificados e secrets.
+
+
+### `module_vm`
+
+Responsável pela criação e configuração das máquinas virtuais.
+
+O módulo também cria:
+
+* Interfaces de rede.
+* Endereços IP públicos.
+* Discos gerenciados.
+* Associações dos discos.
+* Registro da VM Data como SQL Virtual Machine.
+* Execução dos scripts PowerShell por meio de `azurerm_virtual_machine_run_command`.
+
+---
+
+## Máquinas virtuais
+
+### VM Frontend
+
+| Propriedade         | Valor                                        |
+| ------------------- | -------------------------------------------- |
+| Nome                | `vm-prd-tk-fend-cus-001`                     |
+| Região              | Central US                                   |
+| Sistema operacional | Windows Server 2025 Datacenter Azure Edition |
+| SKU                 | `Standard_D2s_v3`                            |
+| Servidor Web        | IIS                                          |
+| Proxy reverso       | Application Request Routing                  |
+| HTTPS               | Certificado Let's Encrypt                    |
+| Hostname            | `tickets.rafacloud.shop`                     |
+
+Responsabilidades:
+
+* Publicar a aplicação frontend.
+* Instalar e configurar IIS URL Rewrite e Application Request Routing.
+* Receber conexões HTTP e HTTPS.
+* Redirecionar chamadas `/api` para o Backend por meio do proxy reverso.
+* Importar o certificado PFX no Windows.
+* Criar o binding HTTPS com SNI no IIS.
+* Validar o acesso HTTP, o proxy para o Backend e a configuração HTTPS.
+
+O IIS External Cache não é utilizado, pois a arquitetura possui apenas uma instância de ARR no Frontend.
+
+O PFX e o hostname são recebidos diretamente dos outputs do módulo de certificado:
+
+```hcl
+frontend_certificate_pfx_base64 = (
+  module.module_certificate.certificate_p12
+)
+
+frontend_certificate_pfx_password = (
+  var.certificate_pfx_password
+)
+
+frontend_certificate_hostname = (
+  module.module_certificate.certificate_hostname
+)
+```
+
+---
+
+### VM Backend
+
+| Propriedade         | Valor                                        |
+| ------------------- | -------------------------------------------- |
+| Nome                | `vm-prd-tk-bend-cus-001`                     |
+| Região              | Central US                                   |
+| Sistema operacional | Windows Server 2025 Datacenter Azure Edition |
+| SKU                 | `Standard_D2s_v3`                            |
+| Runtime             | Node.js 20                                   |
+| Integração IIS      | IISNode                                      |
+| Banco utilizado     | SQL Server da VM Data                        |
+
+Responsabilidades:
+
+* Instalar IIS.
+* Instalar Node.js.
+* Instalar IISNode.
+* Instalar IIS URL Rewrite.
+* Publicar a API.
+* Criar o Application Pool.
+* Criar o site no IIS.
+* Gerar o arquivo `.env` em UTF-8 sem BOM.
+* Tratar com segurança barras, aspas e quebras de linha nos valores gravados no `.env`.
+* Manter compatibilidade com o Windows PowerShell 5.1 utilizado pelas VMs.
+* Configurar a conexão com o SQL Server.
+* Executar o health check da API.
+
+---
+
+### VM Data
+
+| Propriedade           | Valor                     |
+| --------------------- | ------------------------- |
+| Nome                  | `vm-prd-tk-data-cin-001`  |
+| Região                | Central India             |
+| Sistema operacional   | Windows Server 2022       |
+| Imagem                | SQL Server 2022 Developer |
+| SKU                   | `Standard_D2s_v3`         |
+| Porta SQL             | `1433`                    |
+| Tipo de conectividade | `PRIVATE`                 |
+| Licença               | `PAYG`                    |
+
+Imagem utilizada:
+
+```hcl
+source_image_reference {
+  publisher = "microsoftsqlserver"
+  offer     = "sql2022-ws2022"
+  sku       = "sqldev-gen2"
+  version   = "latest"
+}
+```
+
+A VM possui três discos Premium SSD de 8 GiB:
+
+| Disco       | LUN | Cache    |
+| ----------- | --: | -------- |
+| Data Disk 0 |   0 | ReadOnly |
+| Data Disk 1 |   1 | None     |
+| Data Disk 2 |   2 | ReadOnly |
+
+Responsabilidades:
+
+* Aguardar a inicialização do SQL Server e validar que o serviço está em execução.
+* Montar a conexão SQL com `SqlConnectionStringBuilder`.
+* Validar o login administrativo e a resposta do banco `master`.
+* Baixar o arquivo BACPAC.
+* Instalar ou localizar o SqlPackage.
+* Importar o banco de dados.
+* Validar a quantidade esperada de registros nas tabelas `matches`, `stadiums` e `teams`.
+
+Validações executadas:
+
+| Tabela   | Quantidade esperada |
+| -------- | ------------------: |
+| Partidas |                 104 |
+| Estádios |                  17 |
+| Seleções |                  49 |
+
+---
+
+## Pacotes utilizados
+
+### Banco de dados
+
+```text
+https://stotfteccopaazure.blob.core.windows.net/copa2026/FIFA2026Tickets.bacpac
+```
+
+### Backend
+
+```text
+https://stotfteccopaazure.blob.core.windows.net/copa2026/fifa2026-api.zip
+```
+
+### Frontend
+
+```text
+https://stotfteccopaazure.blob.core.windows.net/copa2026/fifa2026-web.zip
+```
+
+---
+
+## Automação das máquinas virtuais
+
+A configuração das VMs é realizada com:
+
+```hcl
+azurerm_virtual_machine_run_command
+```
+
+O uso de Run Command evita o limite de tamanho encontrado anteriormente com o `CustomScriptExtension`.
+
+Recursos utilizados:
+
+```text
+module.module_vm.azurerm_virtual_machine_run_command.configure_data_cin
+module.module_vm.azurerm_virtual_machine_run_command.configure_bend_cus
+module.module_vm.azurerm_virtual_machine_run_command.configure_fend_cus
+```
+
+Ordem lógica de configuração:
+
+```text
+VM Data
+   ↓
+Importação e validação do banco
+   ↓
+VM Backend
+   ↓
+Instalação do Node.js, IISNode e publicação da API
+   ↓
+VM Frontend
+   ↓
+Configuração do IIS, URL Rewrite, ARR e HTTPS
+```
+
+---
+
+## Dependências entre módulos
+
+As dependências são criadas automaticamente pelas referências entre os módulos.
+
+```mermaid
+flowchart LR
+    RG[Resource Group] --> NET[module_network]
+    RG --> DNS[module_dns]
+    DNS --> CERT[module_certificate]
+    NET --> VM[module_vm]
+    CERT --> VM
+    VM --> DNS_RECORD[Registro A tickets]
+```
+
+Fluxo principal:
+
+```text
+Resource Group
+      ↓
+module_network
+      ↓
+module_vm
+
+module_dns.azurerm_dns_zone
+      ↓
+module_certificate
+      ↓
+module_vm.configure_fend_cus
+
+module_vm.vm_public_ip_fend_cus
+      ↓
+module_dns.azurerm_dns_a_record.tickets
+```
+
+A ordem dos blocos no `main.tf` não define a ordem de criação. O Terraform monta o grafo de dependências utilizando as referências entre recursos e módulos.
+
+---
+
+## Regras de segurança de rede
+
+O projeto cria regras para permitir:
+
+### RDP em Central US
+
+```text
+Porta: 3389
+Destino: VMs Frontend e Backend
+```
+
+### RDP em Central India
+
+```text
+Porta: 3389
+Destino: VM Data
+```
+
+### HTTPS no Frontend
+
+```text
+Porta: 443
+Destino: VM Frontend
+```
+
+As regras RDP estão abertas para qualquer origem no ambiente de laboratório. Em produção, o ideal é limitar o acesso a um IP confiável, VPN, Azure Bastion ou solução equivalente.
+
+---
+
+## Variáveis
+
+As declarações ficam no arquivo:
+
+```text
+variables.tf
+```
+
+Os principais grupos de variáveis são:
+
+* Resource Group.
+* Redes de Central US.
+* Redes de Central India.
+* Máquinas virtuais.
+* SQL Server.
+* Azure DNS.
+* Aplicação Backend.
+* Aplicação Frontend.
+* Banco de dados e BACPAC.
+* ACME e Let's Encrypt.
+* Key Vault e certificado HTTPS.
+
+Variáveis sensíveis:
+
+```text
+admin_password
+sql_admin_password
+backend_jwt_secret
+certificate_pfx_password
+```
+---
+
+## Proteção de arquivos sensíveis
+
+O arquivo `terraform.tfvars` não deve ser publicado no GitHub quando possuir senhas, secrets ou outras informações sensíveis.
+
+Exemplo de `.gitignore`:
+
+```gitignore
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+crash.log
+crash.*.log
+
+# Arquivos de variáveis com informações sensíveis
+terraform.tfvars
+*.auto.tfvars
+
+# Planos Terraform
+*.tfplan
+tfplan
+
+# Certificados e chaves
+*.pfx
+*.p12
+*.pem
+*.key
+
+# Arquivos locais
+.vscode/
+```
+
+A decisão de versionar `.terraform.lock.hcl` depende do fluxo adotado. Em projetos Terraform, normalmente é recomendado versioná-lo para manter as versões dos providers consistentes.
+
+Nesse caso, remova esta linha do `.gitignore`:
+
+```gitignore
+.terraform.lock.hcl
 ```
 
 ---
 
 ## Pré-requisitos
 
-Antes de iniciar, é necessário possuir:
+Antes de executar o projeto, é necessário possuir:
 
 * Terraform instalado.
 * Azure CLI instalada.
-* Conta com permissão para criar recursos na assinatura.
-* Sessão autenticada no Azure.
+* Acesso a uma assinatura Azure.
+* Permissão para criar os recursos.
 * Domínio registrado.
-* Permissão para alterar os nameservers do domínio.
+* Acesso ao gerenciador DNS do domínio.
+* Sessão autenticada no Azure CLI.
 
-Autenticação no Azure:
+Autenticação:
 
 ```powershell
 az login
 ```
 
-Confirmação da assinatura ativa:
+Validação da assinatura ativa:
 
 ```powershell
 az account show
 ```
 
-Quando necessário, selecione a assinatura:
+Quando necessário, selecione a assinatura correta:
 
 ```powershell
 az account set --subscription "<SUBSCRIPTION_ID>"
 ```
 
----
-
-## Configuração das variáveis
-
-Crie ou ajuste o arquivo:
-
-```text
-terraform.tfvars
-```
-
-Exemplo simplificado:
+O provider ACME utiliza:
 
 ```hcl
-# E-mail usado para registrar a conta ACME
-acme_email = "seu-email@dominio.com"
-
-# Senha usada para proteger o certificado PFX
-certificate_pfx_password = "SENHA_FORTE"
-
-# Nome globalmente único do Key Vault
-key_vault_name = "kv-tk-cert-001"
-
-# Nome da zona DNS
-dns_zone_name = "rafacloud.shop"
+acme_azure_auth_method = "cli"
 ```
 
-Não publique senhas, segredos JWT ou credenciais administrativas no repositório.
-
-É recomendado adicionar ao `.gitignore`:
-
-```gitignore
-.terraform/
-*.tfstate
-*.tfstate.*
-terraform.tfvars
-crash.log
-crash.*.log
-*.tfplan
-```
-
-O arquivo `.terraform.lock.hcl` deve permanecer versionado.
+Isso permite reutilizar a sessão autenticada pelo Azure CLI.
 
 ---
 
-## Provisionamento
+## Inicialização do Terraform
 
-### 1. Inicializar o Terraform
-
-```powershell
-terraform init
-```
-
-### 2. Formatar os arquivos
+Formate o projeto:
 
 ```powershell
 terraform fmt -recursive
 ```
 
-### 3. Validar a configuração
+Inicialize os providers e módulos:
+
+```powershell
+terraform init
+```
+
+Valide a configuração:
 
 ```powershell
 terraform validate
 ```
 
-### 4. Criar primeiro a zona DNS
+Resultado esperado:
 
-```powershell
-terraform apply -target="module.module_dns.azurerm_dns_zone.dns_zone"
+```text
+Success! The configuration is valid.
 ```
 
-### 5. Consultar os nameservers
-
-```powershell
-terraform output dns_name_servers
-```
-
-### 6. Configurar os nameservers no registrador
-
-Atualize os nameservers do domínio no painel do registrador.
-
-### 7. Validar a delegação
-
-```powershell
-Resolve-DnsName rafacloud.shop -Type NS -Server 8.8.8.8
-```
-
-### 8. Gerar o plano completo
+Gere o plano:
 
 ```powershell
 terraform plan
 ```
 
-### 9. Aplicar a infraestrutura
+Após a reorganização do certificado, os recursos devem aparecer apenas dentro de:
 
-```powershell
-terraform apply
+```text
+module.module_certificate.*
 ```
 
-A criação da SQL Virtual Machine, a importação do banco e a configuração das aplicações podem levar alguns minutos.
+Não devem existir recursos duplicados de ACME, TLS ou Key Vault diretamente no root.
+
+O plano validado da configuração apresentou:
+
+```text
+Plan: 43 to add, 0 to change, 0 to destroy.
+```
 
 ---
 
-## Validação do ambiente
+## Primeira implantação da zona DNS
 
-Depois que o `terraform apply` terminar sem erros, valide o DNS:
+O certificado depende da delegação pública da zona DNS.
+
+Por isso, em uma implantação realizada após a exclusão da zona, primeiro crie apenas a zona DNS:
 
 ```powershell
-Resolve-DnsName tickets.rafacloud.shop
+terraform apply -target="module.module_dns.azurerm_dns_zone.dns_zone"
 ```
 
-O resultado deve apontar para o IP público da VM Frontend.
+Consulte os Name Servers:
 
-Acesse:
-
-```text
-https://tickets.rafacloud.shop
+```powershell
+terraform output dns_name_servers
 ```
 
-Também é possível validar o health check da API pelo proxy:
+Exemplo:
 
 ```text
-https://tickets.rafacloud.shop/api/health
+ns1-01.azure-dns.com
+ns2-01.azure-dns.net
+ns3-01.azure-dns.org
+ns4-01.azure-dns.info
+```
+
+Configure os servidores fornecidos pelo Azure no registrador do domínio.
+
+No ambiente deste projeto, a delegação do domínio é configurada externamente no painel da Hostinger.
+
+---
+
+## Validação da delegação DNS
+
+Após atualizar os Name Servers, valide utilizando um resolvedor público:
+
+```powershell
+Resolve-DnsName rafacloud.shop -Type NS -Server 8.8.8.8
+```
+
+Os servidores retornados devem ser iguais aos apresentados por:
+
+```powershell
+terraform output dns_name_servers
+```
+
+Também pode ser utilizado:
+
+```powershell
+nslookup -type=NS rafacloud.shop 8.8.8.8
+```
+
+A emissão do certificado só deve ser executada quando a zona estiver delegada corretamente.
+
+---
+
+## Implantação completa
+
+Após confirmar a delegação DNS:
+
+```powershell
+terraform plan
+terraform apply
 ```
 
 O fluxo esperado é:
 
-```text
-Internet
-   ↓
-Azure DNS
-   ↓
-IIS Frontend com HTTPS
-   ↓
-ARR Proxy
-   ↓
-Backend Node.js
-   ↓
-SQL Server
-```
-
-Após a validação técnica, podem ser realizados testes funcionais como:
-
-* Cadastro de usuário.
-* Login.
-* Consulta de partidas.
-* Seleção de ingressos.
-* Simulação de compra.
-* Consulta de pedidos ou ingressos adquiridos.
+1. Criação do Resource Group.
+2. Criação das VNets, subnets e NSGs.
+3. Criação da zona DNS.
+4. Emissão do certificado pelo Let's Encrypt.
+5. Criação do Key Vault.
+6. Importação do certificado no Key Vault.
+7. Criação das máquinas virtuais.
+8. Configuração do SQL Server e importação do BACPAC.
+9. Configuração do Backend.
+10. Configuração do Frontend.
+11. Importação do PFX na VM Frontend.
+12. Criação do binding HTTPS no IIS.
+13. Criação do registro DNS `tickets`.
+14. Validação dos endpoints.
 
 ---
 
-## Logs de configuração
+## Outputs do root
 
-Cada VM mantém um arquivo de log com o resultado da automação.
+O projeto disponibiliza:
+
+```text
+vm_public_ip_fend_cus
+vm_public_ip_bend_cus
+vm_public_ip_data_cin
+dns_name_servers
+certificate_key_vault_name
+certificate_key_vault_uri
+certificate_key_vault_certificate_name
+certificate_key_vault_certificate_id
+certificate_iis_hostname
+certificate_not_after
+```
+
+Consulta:
+
+```powershell
+terraform output
+```
+
+Consulta de um output específico:
+
+```powershell
+terraform output certificate_iis_hostname
+```
+
+---
+
+## Validações após o provisionamento
+
+### DNS
+
+```powershell
+Resolve-DnsName tickets.rafacloud.shop -Type A -Server 8.8.8.8
+```
+
+O IP retornado deve ser o IP público da VM Frontend.
+
+### Frontend HTTP
+
+```powershell
+Invoke-WebRequest http://tickets.rafacloud.shop
+```
+
+### Frontend HTTPS
+
+```powershell
+Invoke-WebRequest https://tickets.rafacloud.shop
+```
+
+### Health check do Backend pelo Frontend
+
+```powershell
+Invoke-WebRequest https://tickets.rafacloud.shop/api/health
+```
+
+### Certificado
+
+No navegador, o certificado deve apresentar:
+
+```text
+Domínio: tickets.rafacloud.shop
+Emissor: Let's Encrypt
+Status: válido
+```
+
+## Validação funcional
+
+Após o provisionamento, o fluxo completo da aplicação foi validado com sucesso:
+
+* acesso ao site por `https://tickets.rafacloud.shop`;
+* carregamento do Frontend via HTTPS;
+* comunicação do Frontend com o Backend pelo proxy ARR;
+* comunicação do Backend com o SQL Server;
+* cadastro de usuário;
+* autenticação;
+* compra de ingresso;
+* persistência das informações no banco de dados.
+
+---
+
+## Logs das configurações
 
 ### VM Data
 
@@ -617,114 +922,135 @@ C:\Terraform\Logs\configure-backend.log
 C:\Terraform\Logs\configure-frontend.log
 ```
 
-Esses arquivos podem ser utilizados para diagnosticar erros de download, instalação, importação do banco, configuração do IIS ou publicação das aplicações.
+Os logs podem ser consultados por RDP ou por comandos remotos no Azure.
 
 ---
 
-## Possíveis problemas
+## Solução de problemas
 
-### Falha na emissão do certificado
+### Certificado duplicado no plano
 
-Confirme se o domínio está delegado corretamente:
+Quando os recursos aparecem simultaneamente no root e no módulo:
 
-```powershell
-Resolve-DnsName rafacloud.shop -Type NS -Server 8.8.8.8
+```text
+acme_certificate.tickets
+module.module_certificate.acme_certificate.tickets
 ```
 
-### Aplicação não responde
+significa que ainda existe algum arquivo `.tf` antigo no root declarando os recursos.
+
+Os recursos devem existir apenas em:
+
+```text
+module_certificate/main.tf
+```
+
+### Falha na validação DNS-01
 
 Verifique:
 
-* Status das VMs.
-* Regras do NSG.
-* VNet Peering.
-* Serviço do IIS.
-* Serviço do SQL Server.
-* Logs dos scripts.
-* Resolução do registro DNS.
+* Delegação dos Name Servers.
+* Zona DNS criada.
+* Sessão autenticada no Azure CLI.
+* Assinatura selecionada.
+* Permissão para criar registros DNS.
+* Tempo de propagação configurado.
+* Ausência de registros TXT conflitantes.
 
-### Backend não conecta ao banco
+### Referência inválida ao certificado
 
-Confirme:
+Não utilize no root:
 
-* IP privado da VM Data.
-* Porta 1433.
-* Credenciais SQL.
-* Status do banco `FIFA2026Tickets`.
-* Comunicação entre as VNets.
-
-### Terraform informa recursos já existentes
-
-Verifique os recursos presentes no state:
-
-```powershell
-terraform state list
+```hcl
+acme_certificate.tickets.certificate_p12
+local.certificate_iis_hostname
 ```
 
-Depois execute:
+As referências corretas são:
 
-```powershell
-terraform plan
+```hcl
+module.module_certificate.certificate_p12
+module.module_certificate.certificate_hostname
 ```
 
-Não é necessário destruir recursos já provisionados para repetir apenas as etapas de configuração.
+### Key Vault em soft delete
+
+Mesmo após excluir um Key Vault, o nome pode continuar reservado devido ao soft delete.
+
+Consulte:
+
+```powershell
+az keyvault list-deleted
+```
+
+Recupere ou remova definitivamente conforme necessário.
+
+### Run Command com falha
+
+Consulte os arquivos de log dentro das VMs e valide o status em:
+
+```text
+Virtual Machine
+  └── Run command
+```
+
+Quando uma execução falha durante a criação, o recurso pode permanecer no Azure sem ser gravado no state do Terraform. Nesse caso, remova apenas o Run Command órfão antes de executar novamente:
+
+```powershell
+az vm run-command delete `
+    --resource-group "rg-prd-tik-cus-001" `
+    --vm-name "NOME_DA_VM" `
+    --name "NOME_DO_RUN_COMMAND" `
+    --yes
+```
 
 ---
 
-## Remoção da infraestrutura
+## Destruição do ambiente
 
-Para remover os recursos criados pelo projeto:
+Para remover a infraestrutura:
 
 ```powershell
 terraform destroy
 ```
 
-Ao destruir o ambiente, o provider ACME também pode revogar o certificado emitido.
+O certificado ACME está configurado com:
 
-Recursos com soft delete, como o Azure Key Vault, podem permanecer recuperáveis durante o período configurado.
+```text
+revoke_certificate_on_destroy = true
+```
 
----
+Durante o destroy, o provider pode tentar revogar o certificado.
 
-## Considerações de segurança
-
-Este projeto foi desenvolvido para fins de estudo e laboratório.
-
-Para um ambiente de produção, algumas melhorias recomendadas seriam:
-
-* Restringir as regras de RDP para endereços IP específicos.
-* Utilizar Azure Bastion.
-* Remover IPs públicos das VMs Backend e Data.
-* Utilizar Private Endpoints.
-* Armazenar o state em backend remoto com acesso restrito.
-* Utilizar Managed Identity sempre que possível.
-* Não manter segredos diretamente no `terraform.tfvars`.
-* Utilizar pipeline segura para execução do Terraform.
-* Habilitar proteção contra purge no Key Vault.
-* Configurar monitoramento e alertas.
-* Implementar renovação controlada do certificado.
+O Key Vault utiliza soft delete. Após a destruição, ele poderá permanecer na lista de recursos excluídos durante o período configurado.
 
 ---
 
-## Principais aprendizados
+## Objetivos técnicos do projeto
 
-O projeto permitiu praticar:
+Este projeto demonstra:
 
-* Criação de infraestrutura modular com Terraform.
-* Dependências entre recursos.
-* Provisionamento em múltiplas regiões.
-* Comunicação por VNet Peering.
-* Configuração automatizada de Windows Server.
-* Deploy de aplicações com PowerShell.
-* Automação do IIS.
-* Importação de banco com SqlPackage.
-* Gerenciamento de DNS público.
-* Validação ACME por DNS-01.
-* Emissão e instalação de certificados.
-* Armazenamento de certificados no Azure Key Vault.
-* Arquitetura em três camadas.
+* Modularização Terraform.
+* Infraestrutura multirregional.
+* Separação das camadas de aplicação.
+* Peering entre Virtual Networks.
+* Automação de máquinas virtuais Windows.
+* Publicação automatizada no IIS.
+* Configuração de proxy reverso.
+* Restauração automatizada de banco SQL.
+* Uso de Azure DNS.
+* Emissão automática de certificado HTTPS.
+* Validação DNS-01.
+* Armazenamento do certificado no Azure Key Vault.
+* Consumo de outputs entre módulos.
+* Gerenciamento de dependências pelo grafo do Terraform.
+* Tratamento de informações sensíveis.
+* Automação com PowerShell e Run Command.
 
 ---
 
 ## Autor
 
-Desenvolvido por **Rafael Biasotto** como parte dos estudos práticos de Azure, Terraform, automação e Infrastructure as Code.
+**Rafael Biasotto**
+
+Projeto desenvolvido para estudo e prática de Terraform, Microsoft Azure, automação de infraestrutura, redes, segurança, certificados e arquitetura em nuvem.

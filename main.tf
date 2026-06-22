@@ -57,9 +57,8 @@ module "module_vm" {
   # URL do pacote compilado da aplicação frontend
   frontend_zip_url = var.frontend_zip_url
 
-  # URLs dos instaladores necessários para o ARR
-  external_cache_msi_url = var.external_cache_msi_url
-  arr_msi_url            = var.arr_msi_url
+# URLs dos instaladores necessários para o ARR
+arr_msi_url         = var.arr_msi_url
 
   # Configurações do site e Application Pool do frontend
   frontend_site_name     = var.frontend_site_name
@@ -89,13 +88,13 @@ module "module_vm" {
   frontend_https_enabled = true
 
   # Certificado PFX gerado pelo ACME
-  frontend_certificate_pfx_base64 = acme_certificate.tickets.certificate_p12
+  frontend_certificate_pfx_base64 = module.module_certificate.certificate_p12
 
   # Senha do PFX
   frontend_certificate_pfx_password = var.certificate_pfx_password
 
   # Hostname usado no binding HTTPS do IIS
-  frontend_certificate_hostname = local.certificate_iis_hostname
+  frontend_certificate_hostname = module.module_certificate.certificate_hostname
 
   # Endpoint usado para teste HTTPS
   frontend_https_healthcheck_path = "/"

@@ -61,16 +61,21 @@ try {
             Remove-Item -Path $Destination -Force
         }
 
-        Invoke-WebRequest `
-            -Uri $Uri `
-            -OutFile $Destination `
-            -UseBasicParsing `
-            -Headers @{
-                "User-Agent" = "Terraform-CustomScriptExtension"
-            }
+        try {
+            Invoke-WebRequest `
+                -Uri $Uri `
+                -OutFile $Destination `
+                -UseBasicParsing `
+                -Headers @{
+                    "User-Agent" = "Terraform-Azure-RunCommand"
+                }
+        }
+        catch {
+            throw "Falha ao baixar $Uri para $Destination. Erro: $($_.Exception.Message)"
+        }
 
         if (-not (Test-Path $Destination)) {
-            throw "O arquivo nao foi baixado: $Destination"
+            throw "O arquivo nao foi baixado: $Destination. URL: $Uri"
         }
 
         if ((Get-Item $Destination).Length -eq 0) {
@@ -179,7 +184,6 @@ try {
     # Recupera URLs dos pacotes
     $frontendZipUrl      = ConvertFrom-Base64Value '${frontend_zip_url_b64}'
     $urlRewriteMsiUrl    = ConvertFrom-Base64Value '${url_rewrite_msi_url_b64}'
-    $externalCacheMsiUrl = ConvertFrom-Base64Value '${external_cache_msi_url_b64}'
     $arrMsiUrl           = ConvertFrom-Base64Value '${arr_msi_url_b64}'
 
     # Recupera configurações do site frontend
@@ -283,24 +287,6 @@ try {
     }
     else {
         Write-Host "IIS URL Rewrite ja esta instalado." -ForegroundColor Yellow
-    }
-
-    Write-Step "Instalando IIS External Cache"
-
-    # Instala External Cache caso não exista
-    if (-not (Test-ApplicationInstalled -DisplayNamePattern "*External Cache*")) {
-        $externalCacheMsiPath = Join-Path $workDirectory "external-cache-x64.msi"
-
-        Invoke-FileDownload `
-            -Uri $externalCacheMsiUrl `
-            -Destination $externalCacheMsiPath
-
-        Install-MsiPackage `
-            -MsiPath $externalCacheMsiPath `
-            -ApplicationName "IIS-External-Cache"
-    }
-    else {
-        Write-Host "IIS External Cache ja esta instalado." -ForegroundColor Yellow
     }
 
     Write-Step "Instalando Application Request Routing"
