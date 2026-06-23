@@ -324,7 +324,7 @@ try {
         -PSPath "MACHINE/WEBROOT/APPHOST" `
         -Filter "system.webServer/proxy" `
         -Name "preserveHostHeader" `
-        -Value $true
+        -Value $false
 
     # Evita reescrita do host nos headers de resposta
     Set-WebConfigurationProperty `
